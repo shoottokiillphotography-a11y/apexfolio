@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+<title>ApexFolio</title>
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#080b10" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="ApexFolio" />
+<link rel="apple-touch-icon" href="/icons/icon-192.png" />
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-96.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#080b10;--surface:#0f1420;--surface2:#161c2a;--surface3:#1c2438;
+  --border:#1e2840;--border2:#26304a;
+  --text:#e8eaf2;--text2:#8892aa;--text3:#4a5570;
+  --green:#22c55e;--red:#ef4444;--blue:#3b82f6;--amber:#f59e0b;
+  --font:'Syne',sans-serif;--mono:'IBM Plex Mono',monospace;
+  --r:6px;--r2:10px;--r3:16px;--r4:24px;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.5;min-height:100vh}
+button{cursor:pointer;font-family:var(--font)}
+input,select{font-family:var(--font)}
+.auth-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(59,130,246,.12) 0%,transparent 60%)}
+.auth-card{width:100%;max-width:420px;background:var(--surface);border:1px solid var(--border2);border-radius:var(--r4);padding:40px 36px}
+.auth-logo{font-size:22px;font-weight:800;letter-spacing:.04em;margin-bottom:32px;text-align:center}
+.auth-logo span{color:var(--blue)}
+.auth-title{font-size:22px;font-weight:700;margin-bottom:6px}
+.auth-sub{font-size:13px;color:var(--text2);margin-bottom:28px}
+.form-group{margin-bottom:16px}
+.form-label{display:block;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text3);margin-bottom:6px}
+.form-input{width:100%;background:var(--surface2);border:1px solid var(--border2);color:var(--text);font-size:14px;padding:11px 14px;border-radius:var(--r2);outline:none}
+.form-input:focus{border-color:var(--blue)}
+.form-input::placeholder{color:var(--text3)}
+.auth-btn{width:100%;padding:13px;background:var(--blue);color:#fff;border:none;border-radius:var(--r2);font-size:14px;font-weight:700;margin-top:8px}
+.auth-btn:disabled{opacity:.5}
+.auth-switch{text-align:center;margin-top:20px;font-size:13px;color:var(--text2)}
+.auth-switch a{color:var(--blue);text-decoration:none;font-weight:600}
+.auth-error{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:var(--red);padding:10px 14px;border-radius:var(--r);font-size:13px;margin-bottom:16px}
+.app{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 20px;height:54px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;gap:16px}
+.topbar-left{display:flex;align-items:center;gap:14px}
+.logo{font-size:15px;font-weight:800;letter-spacing:.04em;white-space:nowrap}
+.logo span{color:var(--blue)}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.nav{display:flex;gap:2px;overflow-x:auto}
+.nav-btn{padding:5px 11px;border:none;border-radius:var(--r);background:transparent;color:var(--text2);font-size:12px;font-weight:600;white-space:nowrap}
+.nav-btn.active{background:var(--surface2);color:var(--blue)}
+.topbar-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.currency-select{background:var(--surface2);border:1px solid var(--border2);color:var(--text);font-size:12px;padding:5px 8px;border-radius:var(--r)}
+.user-btn{display:flex;align-items:center;gap:7px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r2);font-size:12px;font-weight:600;color:var(--text2)}
+.user-avatar{width:24px;height:24px;border-radius:50%;background:var(--blue);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.import-btn{display:flex;align-items:center;gap:5px;padding:6px 13px;background:var(--blue);color:#fff;border:none;border-radius:var(--r);font-size:12px;font-weight:700;white-space:nowrap}
+.addlot-btn{padding:6px 13px;background:var(--surface2);color:var(--text2);border:1px solid var(--border2);border-radius:var(--r);font-size:12px;font-weight:700;white-space:nowrap}
+.content{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.metrics-row{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+@media(max-width:900px){.metrics-row{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:600px){.metrics-row{grid-template-columns:repeat(2,1fr)}}
+.metric-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:14px 16px}
+.metric-label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:6px;font-weight:700}
+.metric-value{font-family:var(--mono);font-size:20px;font-weight:500}
+.metric-value.pos{color:var(--green)}.metric-value.neg{color:var(--red)}
+.metric-sub{font-size:11px;color:var(--text3);margin-top:3px;font-family:var(--mono)}
+.metric-sub.pos{color:var(--green)}.metric-sub.neg{color:var(--red)}
+.section-header{display:flex;align-items:center;justify-content:space-between}
+.section-title{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--text2)}
+.table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:auto}
+table{width:100%;border-collapse:collapse;min-width:700px}
+thead tr{border-bottom:1px solid var(--border2)}
+th{padding:9px 12px;text-align:left;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);font-weight:700;white-space:nowrap}
+th.r{text-align:right}
+td{padding:10px 12px;font-size:12px;border-bottom:1px solid var(--border);white-space:nowrap}
+td.r{text-align:right;font-family:var(--mono)}
+.ticker{font-weight:700;font-size:13px;letter-spacing:.04em}
+.co-name{font-size:11px;color:var(--text3)}
+.pos{color:var(--green)}.neg{color:var(--red)}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:100;padding:16px}
+.modal{background:var(--surface);border:1px solid var(--border2);border-radius:var(--r3);padding:24px;width:100%;max-width:400px;max-height:90vh;overflow-y:auto}
+.modal-title{font-size:14px;font-weight:700;margin-bottom:18px;display:flex;align-items:center;gap:8px}
+.modal-close{margin-left:auto;background:none;border:none;color:var(--text3);font-size:18px;padding:2px 6px;border-radius:var(--r)}
+.modal-label{display:block;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text3);margin-bottom:5px;margin-top:14px}
+.modal-input,.modal-select{width:100%;background:var(--surface2);border:1px solid var(--border2);color:var(--text);font-size:13px;padding:9px 11px;border-radius:var(--r);outline:none}
+.modal-input:focus,.modal-select:focus{border-color:var(--blue)}
+.modal-actions{display:flex;gap:8px;margin-top:18px;justify-content:flex-end}
+.btn-primary{padding:8px 18px;background:var(--blue);color:#fff;border:none;border-radius:var(--r);font-size:12px;font-weight:700}
+.btn-secondary{padding:8px 18px;background:var(--surface2);border:1px solid var(--border2);color:var(--text2);border-radius:var(--r);font-size:12px;font-weight:600}
+.empty-state{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:48px 24px;text-align:center;margin-top:16px}
+.toast{position:fixed;bottom:20px;right:20px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r2);padding:12px 16px;font-size:12px;z-index:200;max-width:300px}
+.toast-title{font-weight:700;font-size:13px;margin-bottom:2px}
+.toast.ok .toast-title{color:var(--green)}
+.toast.err .toast-title{color:var(--red)}
+.file-drop{border:2px dashed var(--border2);border-radius:var(--r2);padding:24px;text-align:center;cursor:pointer;margin-bottom:12px}
+.file-drop:hover{border-color:var(--blue)}
+.suggest-box{position:absolute;top:100%;left:0;right:0;background:var(--surface3);border:1px solid var(--border2);border-radius:var(--r);margin-top:2px;z-index:20;max-height:220px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.suggest-item{padding:9px 11px;cursor:pointer;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border)}
+.suggest-item:last-child{border-bottom:none}
+.suggest-item:hover{background:var(--surface2)}
+.suggest-sym{font-weight:700;font-size:13px;color:var(--text);min-width:60px}
+.suggest-name{font-size:11px;color:var(--text3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.suggest-ccy{font-size:10px;color:var(--amber);font-family:var(--mono);flex-shrink:0}
+.field-rel{position:relative}
+.price-hint{display:none;font-size:11px;color:var(--text3);margin-top:6px;font-family:var(--mono);line-height:1.5}
+</style>
+</head>
+<body>
+<div id="authView">
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="auth-logo">APEX<span>FOLIO</span></div>
+      <div id="loginForm">
+        <div class="auth-title">Welcome back</div>
+        <div class="auth-sub">Sign in to your portfolio</div>
+        <div id="loginError" class="auth-error" style="display:none"></div>
+        <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="loginEmail" type="email" autocomplete="email" /></div>
+        <div class="form-group"><label class="form-label">Password</label><input class="form-input" id="loginPassword" type="password" autocomplete="current-password" /></div>
+        <button class="auth-btn" id="loginBtn" onclick="doLogin()">Sign in</button>
+        <div class="auth-switch">Don't have an account? <a href="#" onclick="showRegister()">Create one</a></div>
+      </div>
+      <div id="registerForm" style="display:none">
+        <div class="auth-title">Create account</div>
+        <div class="auth-sub">Start tracking your portfolio</div>
+        <div id="registerError" class="auth-error" style="display:none"></div>
+        <div class="form-group"><label class="form-label">Your name</label><input class="form-input" id="regName" type="text" autocomplete="name" /></div>
+        <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="regEmail" type="email" autocomplete="email" /></div>
+        <div class="form-group"><label class="form-label">Password</label><input class="form-input" id="regPassword" type="password" autocomplete="new-password" /></div>
+        <button class="auth-btn" id="registerBtn" onclick="doRegister()">Create account</button>
+        <div class="auth-switch">Already have an account? <a href="#" onclick="showLogin()">Sign in</a></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="appView" style="display:none" class="app">
+  <div class="topbar">
+    <div class="topbar-left">
+      <div class="logo">APEX<span>FOLIO</span></div>
+      <div class="live-dot"></div>
+      <div class="nav">
+        <button class="nav-btn active" onclick="setView('portfolio')">Portfolio</button>
+        <button class="nav-btn" onclick="setView('watchlist')">Watchlist</button>
+        <button class="nav-btn" onclick="setView('alerts')">Alerts</button>
+        <button class="nav-btn" onclick="setView('events')">Events</button>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <select class="currency-select" onchange="setCurrency(this.value)">
+        <option value="USD">USD $</option>
+        <option value="AUD" selected>AUD $</option>
+        <option value="GBP">GBP £</option>
+      </select>
+      <button class="addlot-btn" onclick="openAddLot()">+ Add Lot</button>
+      <button class="import-btn" onclick="openImport()">↑ Import</button>
+      <button class="user-btn" onclick="doLogout()" title="Sign out">
+        <div class="user-avatar" id="userAvatar">?</div>
+        <span id="userName">...</span>
+      </button>
+    </div>
+  </div>
+  <div class="content" id="mainContent"></div>
+</div>
+<div class="overlay" id="addLotModal" style="display:none">
+  <div class="modal">
+    <div class="modal-title">+ Add Lot <button class="modal-close" onclick="closeModal('addLotModal')">✕</button></div>
+    <div class="field-rel">
+      <label class="modal-label">Ticker *</label>
+      <input class="modal-input" id="lotTicker" placeholder="e.g. MSFT or MTO.AX" autocomplete="off" oninput="onTickerInput(this)" onblur="onTickerBlur()" />
+      <div id="tickerSuggest" class="suggest-box" style="display:none"></div>
+    </div>
+    <div class="field-rel">
+      <label class="modal-label">Company name</label>
+      <input class="modal-input" id="lotCompany" placeholder="Type company name to search…" autocomplete="off" oninput="onCompanyInput(this)" onblur="onCompanyBlur()" />
+      <div id="companySuggest" class="suggest-box" style="display:none"></div>
+    </div>
+    <label class="modal-label">Quantity *</label>
+    <input class="modal-input" id="lotQty" type="number" step="any" placeholder="50" />
+    <label class="modal-label">Avg cost * <span style="color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0;font-size:10px">(auto-fills when date selected)</span></label>
+    <input class="modal-input" id="lotCost" type="number" step="any" placeholder="145.20" oninput="costManuallyEdited=true" />
+    <div id="priceHint" class="price-hint"></div>
+    <label class="modal-label">Currency</label>
+    <select class="modal-select" id="lotCurrency">
+      <option value="AUD" selected>AUD</option>
+      <option value="USD">USD</option>
+      <option value="GBP">GBP</option>
+      <option value="EUR">EUR</option>
+      <option value="DKK">DKK</option>
+      <option value="JPY">JPY</option>
+      <option value="HKD">HKD</option>
+      <option value="SGD">SGD</option>
+    </select>
+    <label class="modal-label">Purchase date *</label>
+    <input class="modal-input" id="lotDate" type="date" onchange="onDateChange()" />
+    <label class="modal-label">Notes</label>
+    <input class="modal-input" id="lotNotes" />
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal('addLotModal')">Cancel</button>
+      <button class="btn-primary" onclick="saveLot()">Save lot</button>
+    </div>
+  </div>
+</div>
+<div class="overlay" id="importModal" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-title">↑ Import Holdings <button class="modal-close" onclick="closeModal('importModal')">✕</button></div>
+    <div class="file-drop" onclick="document.getElementById('netwealthInput').click()">
+      <div style="font-size:22px;margin-bottom:6px">🏦</div>
+      <div style="font-size:13px;font-weight:700;margin-bottom:3px">Import Netwealth CSV</div>
+      <div style="font-size:11px;color:var(--text3)">Cash Transaction Listing - Detail export</div>
+    </div>
+    <input type="file" id="netwealthInput" accept=".csv" style="display:none" onchange="handleNetwealthFile(this)" />
+    <div class="modal-actions"><button class="btn-secondary" onclick="closeModal('importModal')">Cancel</button></div>
+  </div>
+</div>
+<div class="toast" id="toast" style="display:none">
+  <div class="toast-title" id="toastTitle"></div>
+  <div id="toastMsg" style="color:var(--text2)"></div>
+</div>
+<script>
+const API='/api';
+let TOKEN=localStorage.getItem('apexToken')||null;
+let currentUser=JSON.parse(localStorage.getItem('apexUser')||'null');
+let currency=localStorage.getItem('apexCurrency')||'AUD';
+let view='portfolio';
+const FX={USD:1,AUD:1.54,GBP:0.79,EUR:1.08,DKK:0.14,JPY:0.0067,HKD:0.13,SGD:0.74};
+const SYM={USD:'$',AUD:'A$',GBP:'£',EUR:'€',DKK:'kr',JPY:'¥',HKD:'HK$',SGD:'S$'};
+let holdings=[],watchlist=[],alerts=[],notifications=[];
+
+function fmt(n){const s=SYM[currency]||'$';const r=Math.abs(n||0)*FX[currency];return(n<0?'-':'')+s+r.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}
+function fmtPct(n){return(n>=0?'+':'')+n.toFixed(2)+'%'}
+function fmtPrice(n){return(SYM[currency]||'$')+(Math.abs(n||0)*FX[currency]).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}
+
+async function apiFetch(path,opts={}){
+  const res=await fetch(`${API}${path}`,{...opts,
+    headers:{'Content-Type':'application/json',...(TOKEN?{Authorization:`Bearer ${TOKEN}`}:{}),...(opts.headers||{})},
+    body:opts.body?JSON.stringify(opts.body):undefined});
+  const data=await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`);
+  return data;
+}
+
+function showLogin(){document.getElementById('loginForm').style.display='block';document.getElementById('registerForm').style.display='none';}
+function showRegister(){document.getElementById('loginForm').style.display='none';document.getElementById('registerForm').style.display='block';}
+function setAuthError(id,msg){const el=document.getElementById(id);el.textContent=msg;el.style.display=msg?'block':'none';}
+
+async function doLogin(){
+  const email=document.getElementById('loginEmail').value.trim();
+  const password=document.getElementById('loginPassword').value;
+  setAuthError('loginError','');
+  const btn=document.getElementById('loginBtn');btn.disabled=true;btn.textContent='Signing in...';
+  try{onAuthSuccess(await apiFetch('/auth/login',{method:'POST',body:{email,password}}));}
+  catch(e){setAuthError('loginError',e.message);btn.disabled=false;btn.textContent='Sign in';}
+}
+async function doRegister(){
+  const name=document.getElementById('regName').value.trim();
+  const email=document.getElementById('regEmail').value.trim();
+  const password=document.getElementById('regPassword').value;
+  setAuthError('registerError','');
+  const btn=document.getElementById('registerBtn');btn.disabled=true;btn.textContent='Creating account...';
+  try{onAuthSuccess(await apiFetch('/auth/register',{method:'POST',body:{name,email,password}}));}
+  catch(e){setAuthError('registerError',e.message);btn.disabled=false;btn.textContent='Create account';}
+}
+function onAuthSuccess(data){
+  TOKEN=data.token;currentUser=data.user;
+  localStorage.setItem('apexToken',TOKEN);
+  localStorage.setItem('apexUser',JSON.stringify(currentUser));
+  enterApp();
+}
+function enterApp(){
+  document.getElementById('authView').style.display='none';
+  document.getElementById('appView').style.display='flex';
+  const initials=(currentUser?.name||'U').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  document.getElementById('userAvatar').textContent=initials;
+  document.getElementById('userName').textContent=currentUser?.name?.split(' ')[0]||'User';
+  loadHoldings();loadAlerts();loadWatchlist();
+}
+function doLogout(){
+  TOKEN=null;currentUser=null;
+  localStorage.removeItem('apexToken');localStorage.removeItem('apexUser');
+  holdings=[];watchlist=[];alerts=[];
+  document.getElementById('appView').style.display='none';
+  document.getElementById('authView').style.display='block';
+  showLogin();
+}
+async function loadHoldings(){
+  try{const d=await apiFetch('/holdings');holdings=d.holdings||[];render();}
+  catch(e){holdings=[];render();}
+}
+async function loadAlerts(){
+  try{const d=await apiFetch('/alerts');alerts=d.alerts||[];if(view==='alerts'||view==='portfolio')render();}
+  catch(e){alerts=[];}
+}
+async function loadWatchlist(){
+  try{const d=await apiFetch('/watchlist');watchlist=d.watchlist||[];if(view==='watchlist')render();}
+  catch(e){watchlist=[];}
+}
+function setView(v){
+  view=v;
+  document.querySelectorAll('.nav-btn').forEach((b,i)=>{b.classList.toggle('active',['portfolio','watchlist','alerts','events'][i]===v);});
+  render();
+}
+function render(){
+  const el=document.getElementById('mainContent');
+  if(view==='portfolio') el.innerHTML=renderPortfolio();
+  else if(view==='watchlist') el.innerHTML=renderWatchlist();
+  else if(view==='alerts') el.innerHTML=renderAlerts();
+  else if(view==='events') el.innerHTML=renderEvents();
+}
+function renderPortfolio(){
+  if(!holdings.length){
+    return `<div class="metrics-row">
+      <div class="metric-card"><div class="metric-label">Total Value</div><div class="metric-value">${fmt(0)}</div><div class="metric-sub">0 positions</div></div>
+      <div class="metric-card"><div class="metric-label">Total Cost</div><div class="metric-value">${fmt(0)}</div><div class="metric-sub">0 lots</div></div>
+      <div class="metric-card"><div class="metric-label">Unrealized P&L</div><div class="metric-value">${fmt(0)}</div><div class="metric-sub">—</div></div>
+      <div class="metric-card"><div class="metric-label">Realised P&L</div><div class="metric-value">${fmt(0)}</div><div class="metric-sub">—</div></div>
+      <div class="metric-card"><div class="metric-label">Active Alerts</div><div class="metric-value">${alerts.filter(a=>a.status==='active').length}</div><div class="metric-sub">${alerts.length} total</div></div>
+    </div>
+    <div class="empty-state">
+      <div style="font-size:34px;margin-bottom:12px">📈</div>
+      <div style="font-size:16px;font-weight:700;margin-bottom:6px">Your portfolio is empty</div>
+      <div style="font-size:13px;color:var(--text3);margin-bottom:20px;max-width:380px;margin-left:auto;margin-right:auto">Import your Netwealth CSV to load your full history, or add a lot manually to get started.</div>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+        <button class="import-btn" onclick="openImport()">↑ Import Netwealth CSV</button>
+        <button class="addlot-btn" onclick="openAddLot()">+ Add Lot</button>
+      </div>
+    </div>`;
+  }
+  const totalValue=holdings.reduce((s,h)=>s+(h.currentValue||0),0);
+  const totalCost=holdings.reduce((s,h)=>s+(h.totalCost||0),0);
+  const totalGL=totalValue-totalCost;
+  const totalGLPct=totalCost>0?(totalGL/totalCost*100):0;
+  const metrics=`<div class="metrics-row">
+    <div class="metric-card"><div class="metric-label">Total Value</div><div class="metric-value">${fmt(totalValue)}</div><div class="metric-sub">${holdings.length} positions</div></div>
+    <div class="metric-card"><div class="metric-label">Total Cost</div><div class="metric-value">${fmt(totalCost)}</div><div class="metric-sub">${holdings.reduce((s,h)=>s+(h.lot_count||0),0)} lots</div></div>
+    <div class="metric-card"><div class="metric-label">Unrealized P&L</div><div class="metric-value ${totalGL>=0?'pos':'neg'}">${fmt(totalGL)}</div><div class="metric-sub ${totalGL>=0?'pos':'neg'}">${fmtPct(totalGLPct)}</div></div>
+    <div class="metric-card"><div class="metric-label">Day P&L</div><div class="metric-value">—</div><div class="metric-sub">—</div></div>
+    <div class="metric-card"><div class="metric-label">Active Alerts</div><div class="metric-value">${alerts.filter(a=>a.status==='active').length}</div><div class="metric-sub">${alerts.length} total</div></div>
+  </div>`;
+  const rows=holdings.map(h=>`<tr>
+    <td><div class="ticker">${h.ticker}</div><div class="co-name">${h.company_name||''}</div></td>
+    <td class="r">${(h.total_qty||0).toLocaleString()}</td>
+    <td class="r">${fmtPrice(h.avg_cost||0)}</td>
+    <td class="r">${fmtPrice(h.currentPrice||0)}</td>
+    <td class="r">${fmtPrice(h.currentValue||0)}</td>
+    <td class="r ${(h.unrealizedGL||0)>=0?'pos':'neg'}">${fmt(h.unrealizedGL||0)}</td>
+  </tr>`).join('');
+  return metrics+`<div>
+    <div class="section-header" style="margin-bottom:10px"><div class="section-title">Holdings (${holdings.length})</div></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Ticker</th><th class="r">Qty</th><th class="r">Avg Cost</th><th class="r">Price</th><th class="r">Value</th><th class="r">Unreal. G/L</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+  </div>`;
+}
+function renderWatchlist(){
+  return `<div class="section-header" style="margin-bottom:14px"><div class="section-title">Watchlist (${watchlist.length})</div></div>
+  <div class="empty-state"><div style="font-size:13px;color:var(--text3)">Your watchlist is empty.</div></div>`;
+}
+function renderAlerts(){
+  if(!alerts.length) return `<div class="section-header" style="margin-bottom:14px"><div class="section-title">Price Alerts (0)</div></div>
+    <div class="empty-state"><div style="font-size:13px;color:var(--text3)">No alerts yet.</div></div>`;
+  const items=alerts.map(a=>`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:12px 16px;margin-bottom:8px">
+    <strong>${a.ticker}</strong> · ${a.kind||'alert'} ${a.direction||''} ${fmtPrice(a.threshold)}
+  </div>`).join('');
+  return `<div class="section-header" style="margin-bottom:14px"><div class="section-title">Price Alerts (${alerts.length})</div></div>${items}`;
+}
+function renderEvents(){
+  return `<div class="section-header" style="margin-bottom:14px"><div class="section-title">Corporate Events</div></div>
+  <div class="empty-state"><div style="font-size:13px;color:var(--text3)">No upcoming events yet.</div></div>`;
+}
+let tickerCurrency='USD';
+function openAddLot(){
+  tickerCurrency='USD';
+  document.getElementById('lotTicker').value='';
+  document.getElementById('lotCompany').value='';
+  document.getElementById('lotQty').value='';
+  document.getElementById('lotCost').value='';
+  document.getElementById('lotDate').value=new Date().toISOString().split('T')[0];
+  document.getElementById('lotNotes').value='';
+  document.getElementById('lotCurrency').value='AUD';
+  document.getElementById('tickerSuggest').style.display='none';
+  document.getElementById('companySuggest').style.display='none';
+  document.getElementById('priceHint').style.display='none';
+  costManuallyEdited=false;
+  document.getElementById('addLotModal').style.display='flex';
+}
+async function saveLot(){
+  const ticker=document.getElementById('lotTicker').value.toUpperCase().trim();
+  const company=document.getElementById('lotCompany').value.trim();
+  const qty=parseFloat(document.getElementById('lotQty').value);
+  const cost=parseFloat(document.getElementById('lotCost').value);
+  const lotCurrency=document.getElementById('lotCurrency').value;
+  const date=document.getElementById('lotDate').value;
+  const notes=document.getElementById('lotNotes').value.trim();
+  if(!ticker){toast('Missing ticker','Enter a ticker','err');return;}
+  if(isNaN(qty)||qty<=0){toast('Invalid quantity','Enter qty > 0','err');return;}
+  if(isNaN(cost)||cost<=0){toast('Invalid cost','Enter cost > 0','err');return;}
+  if(!date){toast('Missing date','Select a date','err');return;}
+  try{
+    await apiFetch('/transactions',{method:'POST',body:{ticker,companyName:company,type:'buy',quantity:qty,price:cost,currency:lotCurrency,tradeDate:date,notes,source:'manual'}});
+    closeModal('addLotModal');
+    toast('Lot added',`${qty} ${ticker} @ ${cost.toFixed(2)} ${lotCurrency}`,'ok');
+    await loadHoldings();
+  }catch(e){toast('Error',e.message,'err');}
+}
+let suggestTimer=null,costManuallyEdited=false;
+function debounceSuggest(fn){clearTimeout(suggestTimer);suggestTimer=setTimeout(fn,220);}
+async function searchSymbols(q){
+  try{const d=await apiFetch(`/lookup/search?q=${encodeURIComponent(q)}`);return d.results||[];}
+  catch(e){return[];}
+}
+function renderSuggest(boxId,results,onPick){
+  const box=document.getElementById(boxId);
+  if(!results.length){box.style.display='none';box.innerHTML='';return;}
+  box.innerHTML=results.map((r,i)=>
+    `<div class="suggest-item" onmousedown="event.preventDefault()" onclick="__pick_${boxId}(${i})">
+      <span class="suggest-sym">${r.symbol}</span>
+      <span class="suggest-name">${r.name}</span>
+      <span class="suggest-ccy">${r.currency||'USD'}</span>
+    </div>`).join('');
+  box.style.display='block';
+  window[`__pick_${boxId}`]=(idx)=>{onPick(results[idx]);box.style.display='none';};
+}
+function onTickerInput(el){
+  el.value=el.value.toUpperCase();
+  const q=el.value.trim();
+  if(q.length<1){document.getElementById('tickerSuggest').style.display='none';return;}
+  debounceSuggest(async()=>{const r=await searchSymbols(q);renderSuggest('tickerSuggest',r,pickTicker);});
+}
+function pickTicker(r){
+  document.getElementById('lotTicker').value=r.symbol;
+  document.getElementById('lotCompany').value=r.name;
+  tickerCurrency=r.currency||'USD';
+  const sel=document.getElementById('lotCurrency');
+  if([...sel.options].some(o=>o.value===tickerCurrency)) sel.value=tickerCurrency;
+  costManuallyEdited=false;
+  fetchHistorical();
+}
+function onTickerBlur(){
+  setTimeout(()=>{document.getElementById('tickerSuggest').style.display='none';},150);
+  const ticker=document.getElementById('lotTicker').value.trim().toUpperCase();
+  const companyEl=document.getElementById('lotCompany');
+  if(ticker&&!companyEl.value.trim()){
+    apiFetch(`/lookup/resolve?ticker=${encodeURIComponent(ticker)}`)
+      .then(d=>{
+        if(d.name) companyEl.value=d.name;
+        if(d.currency){tickerCurrency=d.currency;const sel=document.getElementById('lotCurrency');if([...sel.options].some(o=>o.value===d.currency)) sel.value=d.currency;}
+        costManuallyEdited=false;fetchHistorical();
+      }).catch(()=>{});
+  } else {fetchHistorical();}
+}
+function onCompanyInput(el){
+  const q=el.value.trim();
+  if(q.length<2){document.getElementById('companySuggest').style.display='none';return;}
+  debounceSuggest(async()=>{const r=await searchSymbols(q);renderSuggest('companySuggest',r,pickCompany);});
+}
+function pickCompany(r){
+  document.getElementById('lotTicker').value=r.symbol;
+  document.getElementById('lotCompany').value=r.name;
+  tickerCurrency=r.currency||'USD';
+  const sel=document.getElementById('lotCurrency');
+  if([...sel.options].some(o=>o.value===tickerCurrency)) sel.value=tickerCurrency;
+  costManuallyEdited=false;fetchHistorical();
+}
+function onCompanyBlur(){setTimeout(()=>{document.getElementById('companySuggest').style.display='none';},150);}
+function onDateChange(){costManuallyEdited=false;fetchHistorical();}
+const FX_TO_AUD={USD:1.54,GBP:1.95,AUD:1,EUR:1.65,DKK:0.22,JPY:0.0103,HKD:0.20,SGD:1.14};
+const CCY_SYM={USD:'US$',GBP:'£',AUD:'A$',EUR:'€',DKK:'kr',JPY:'¥',HKD:'HK$',SGD:'S$'};
+async function fetchHistorical(){
+  const ticker=document.getElementById('lotTicker').value.trim().toUpperCase();
+  const date=document.getElementById('lotDate').value;
+  const hint=document.getElementById('priceHint');
+  const costEl=document.getElementById('lotCost');
+  if(!ticker||!date) return;
+  if(costManuallyEdited&&costEl.value) return;
+  hint.style.display='block';
+  hint.style.color='var(--text3)';
+  hint.textContent=`Fetching ${ticker} close for ${date}…`;
+  try{
+    const data=await apiFetch(`/lookup/historical?ticker=${encodeURIComponent(ticker)}&date=${date}`);
+    if(data.close){
+      const nativeCcy=data.currency||tickerCurrency||'USD';
+      const nativePrice=data.close;
+      const audRate=FX_TO_AUD[nativeCcy]||1.54;
+      const audPrice=nativeCcy==='AUD'?nativePrice:nativePrice*audRate;
+      const sym=CCY_SYM[nativeCcy]||'$';
+      costEl.value=nativePrice.toFixed(2);
+      costManuallyEdited=false;
+      const sel=document.getElementById('lotCurrency');
+      if([...sel.options].some(o=>o.value===nativeCcy)) sel.value=nativeCcy;
+      hint.style.color='var(--green)';
+      if(nativeCcy==='AUD'){
+        hint.textContent=`✓ ${data.date}: A$${nativePrice.toFixed(2)} AUD`;
+      } else {
+        hint.textContent=`✓ ${data.date}: ${sym}${nativePrice.toFixed(2)} ${nativeCcy} · ≈ A$${audPrice.toFixed(2)} AUD`;
+      }
+    } else {
+      hint.style.color='var(--text3)';
+      hint.textContent='No historical price found — enter cost manually';
+    }
+  }catch(e){
+    hint.style.color='var(--text3)';
+    hint.textContent="Couldn't fetch price — enter cost manually";
+  }
+}
+function openImport(){document.getElementById('importModal').style.display='flex';}
+async function handleNetwealthFile(input){
+  const file=input.files[0];if(!file)return;
+  toast('Importing','Reading your Netwealth CSV…','ok');
+  const formData=new FormData();formData.append('file',file);
+  try{
+    const res=await fetch(`${API}/import/netwealth`,{method:'POST',headers:{Authorization:`Bearer ${TOKEN}`},body:formData});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Import failed');
+    closeModal('importModal');
+    toast('Import complete',data.message,'ok');
+    await loadHoldings();
+  }catch(e){toast('Import failed',e.message,'err');}
+}
+function closeModal(id){document.getElementById(id).style.display='none';}
+function setCurrency(c){currency=c;localStorage.setItem('apexCurrency',c);render();}
+let toastTmr;
+function toast(title,msg,type='ok'){
+  const el=document.getElementById('toast');
+  document.getElementById('toastTitle').textContent=title;
+  document.getElementById('toastMsg').textContent=msg;
+  el.className=`toast ${type}`;el.style.display='block';
+  clearTimeout(toastTmr);toastTmr=setTimeout(()=>el.style.display='none',3800);
+}
+async function tickPrices(){
+  if(!TOKEN||!holdings.length)return;
+  try{const d=await apiFetch('/holdings');holdings=d.holdings||[];if(view==='portfolio')render();}
+  catch(e){}
+}
+if(TOKEN&&currentUser)enterApp();
+setInterval(tickPrices,60000);
+document.querySelectorAll('.overlay').forEach(el=>{el.addEventListener('click',e=>{if(e.target===el)el.style.display='none';});});
+if('serviceWorker' in navigator){window.addEventListener('load',async()=>{try{await navigator.serviceWorker.register('/sw.js');}catch(err){}});}
+</script>
+</body>
+</html>
