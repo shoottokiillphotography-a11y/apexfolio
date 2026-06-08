@@ -20,7 +20,7 @@
   --bg:#080b10;--surface:#0f1420;--surface2:#161c2a;--surface3:#1c2438;
   --border:#1e2840;--border2:#26304a;
   --text:#e8eaf2;--text2:#8892aa;--text3:#4a5570;
-  --green:#22c55e;--red:#ef4444;--blue:#3b82f6;--amber:#f59e0b;
+  --green:#22c55e;--red:#ef4444;--blue:#3b82f6;--amber:#f59e0b;--purple:#a855f7;
   --font:'Syne',sans-serif;--mono:'IBM Plex Mono',monospace;
   --r:6px;--r2:10px;--r3:16px;--r4:24px;
 }
@@ -72,15 +72,17 @@ input,select{font-family:var(--font)}
 .section-header{display:flex;align-items:center;justify-content:space-between}
 .section-title{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--text2)}
 .table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:auto}
-table{width:100%;border-collapse:collapse;min-width:700px}
+table{width:100%;border-collapse:collapse;min-width:600px}
 thead tr{border-bottom:1px solid var(--border2)}
 th{padding:9px 12px;text-align:left;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);font-weight:700;white-space:nowrap}
 th.r{text-align:right}
 td{padding:10px 12px;font-size:12px;border-bottom:1px solid var(--border);white-space:nowrap}
 td.r{text-align:right;font-family:var(--mono)}
+tr:last-child td{border-bottom:none}
 .ticker{font-weight:700;font-size:13px;letter-spacing:.04em}
 .co-name{font-size:11px;color:var(--text3)}
 .pos{color:var(--green)}.neg{color:var(--red)}
+.badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:100;padding:16px}
 .modal{background:var(--surface);border:1px solid var(--border2);border-radius:var(--r3);padding:24px;width:100%;max-width:400px;max-height:90vh;overflow-y:auto}
 .modal-title{font-size:14px;font-weight:700;margin-bottom:18px;display:flex;align-items:center;gap:8px}
@@ -96,6 +98,7 @@ td.r{text-align:right;font-family:var(--mono)}
 .toast-title{font-weight:700;font-size:13px;margin-bottom:2px}
 .toast.ok .toast-title{color:var(--green)}
 .toast.err .toast-title{color:var(--red)}
+.toast.warn .toast-title{color:var(--amber)}
 .file-drop{border:2px dashed var(--border2);border-radius:var(--r2);padding:24px;text-align:center;cursor:pointer;margin-bottom:12px}
 .file-drop:hover{border-color:var(--blue)}
 .suggest-box{position:absolute;top:100%;left:0;right:0;background:var(--surface3);border:1px solid var(--border2);border-radius:var(--r);margin-top:2px;z-index:20;max-height:220px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.5)}
@@ -106,7 +109,17 @@ td.r{text-align:right;font-family:var(--mono)}
 .suggest-name{font-size:11px;color:var(--text3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .suggest-ccy{font-size:10px;color:var(--amber);font-family:var(--mono);flex-shrink:0}
 .field-rel{position:relative}
-.price-hint{display:none;font-size:11px;color:var(--text3);margin-top:6px;font-family:var(--mono);line-height:1.5}
+.price-hint{display:none;font-size:11px;color:var(--text3);margin-top:6px;font-family:var(--mono)}
+.row-btn{padding:3px 8px;border:none;background:none;color:var(--text3);border-radius:var(--r);font-size:12px;cursor:pointer}
+.row-btn:hover{background:var(--surface2);color:var(--red)}
+.lot-row{background:var(--surface2);border-radius:var(--r);padding:8px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.add-row{display:flex;gap:8px;margin-bottom:16px}
+.add-input{flex:1;background:var(--surface2);border:1px solid var(--border2);color:var(--text);font-size:13px;padding:9px 12px;border-radius:var(--r2);outline:none}
+.add-btn{padding:9px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--r2);font-size:12px;font-weight:700;white-space:nowrap}
+.group-row{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:10px 12px;margin-bottom:6px}
+.group-dot{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+.group-name-input{flex:1;background:transparent;border:1px solid transparent;color:var(--text);font-size:13px;font-weight:600;padding:5px 8px;border-radius:var(--r);outline:none}
+.group-name-input:focus{border-color:var(--blue);background:var(--surface2)}
 </style>
 </head>
 <body>
@@ -143,9 +156,11 @@ td.r{text-align:right;font-family:var(--mono)}
       <div class="live-dot"></div>
       <div class="nav">
         <button class="nav-btn active" onclick="setView('portfolio')">Portfolio</button>
-        <button class="nav-btn" onclick="setView('watchlist')">Watchlist</button>
+        <button class="nav-btn" onclick="setView('ledger')">Ledger</button>
+        <button class="nav-btn" onclick="setView('closed')">Closed</button>
+        <button class="nav-btn" onclick="setView('groups')">Groups</button>
         <button class="nav-btn" onclick="setView('alerts')">Alerts</button>
-        <button class="nav-btn" onclick="setView('events')">Events</button>
+        <button class="nav-btn" onclick="setView('watchlist')">Watchlist</button>
       </div>
     </div>
     <div class="topbar-right">
@@ -156,7 +171,7 @@ td.r{text-align:right;font-family:var(--mono)}
       </select>
       <button class="addlot-btn" onclick="openAddLot()">+ Add Lot</button>
       <button class="import-btn" onclick="openImport()">↑ Import</button>
-      <button class="user-btn" onclick="doLogout()" title="Sign out">
+      <button class="user-btn" onclick="doLogout()">
         <div class="user-avatar" id="userAvatar">?</div>
         <span id="userName">...</span>
       </button>
@@ -174,12 +189,12 @@ td.r{text-align:right;font-family:var(--mono)}
     </div>
     <div class="field-rel">
       <label class="modal-label">Company name</label>
-      <input class="modal-input" id="lotCompany" placeholder="Type company name to search…" autocomplete="off" oninput="onCompanyInput(this)" onblur="onCompanyBlur()" />
+      <input class="modal-input" id="lotCompany" placeholder="Type company name to search" autocomplete="off" oninput="onCompanyInput(this)" onblur="onCompanyBlur()" />
       <div id="companySuggest" class="suggest-box" style="display:none"></div>
     </div>
     <label class="modal-label">Quantity *</label>
     <input class="modal-input" id="lotQty" type="number" step="any" placeholder="50" />
-    <label class="modal-label">Avg cost * <span style="color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0;font-size:10px">(auto-fills when date selected)</span></label>
+    <label class="modal-label">Avg cost * <span style="color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0;font-size:10px">(auto-fills from date)</span></label>
     <input class="modal-input" id="lotCost" type="number" step="any" placeholder="145.20" oninput="costManuallyEdited=true" />
     <div id="priceHint" class="price-hint"></div>
     <label class="modal-label">Currency</label>
@@ -215,6 +230,29 @@ td.r{text-align:right;font-family:var(--mono)}
     <div class="modal-actions"><button class="btn-secondary" onclick="closeModal('importModal')">Cancel</button></div>
   </div>
 </div>
+<div class="overlay" id="alertModal" style="display:none">
+  <div class="modal">
+    <div class="modal-title">Set Alert <button class="modal-close" onclick="closeModal('alertModal')">✕</button></div>
+    <label class="modal-label">Ticker</label>
+    <input class="modal-input" id="alertTicker" placeholder="AAPL" oninput="this.value=this.value.toUpperCase()" />
+    <label class="modal-label">Alert type</label>
+    <select class="modal-select" id="alertKind">
+      <option value="buy_below">Buy Below</option>
+      <option value="trim_above">Trim Above</option>
+      <option value="take_profit">Take Profit</option>
+      <option value="stop_loss">Stop Loss</option>
+      <option value="custom">Custom</option>
+    </select>
+    <label class="modal-label">Price threshold</label>
+    <input class="modal-input" id="alertThreshold" type="number" step="any" placeholder="200.00" />
+    <label class="modal-label">Email</label>
+    <input class="modal-input" id="alertEmail" type="email" />
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal('alertModal')">Cancel</button>
+      <button class="btn-primary" onclick="saveAlert()">Save alert</button>
+    </div>
+  </div>
+</div>
 <div class="toast" id="toast" style="display:none">
   <div class="toast-title" id="toastTitle"></div>
   <div id="toastMsg" style="color:var(--text2)"></div>
@@ -227,11 +265,11 @@ let currency=localStorage.getItem('apexCurrency')||'AUD';
 let view='portfolio';
 const FX={USD:1,AUD:1.54,GBP:0.79,EUR:1.08,DKK:0.14,JPY:0.0067,HKD:0.13,SGD:0.74};
 const SYM={USD:'$',AUD:'A$',GBP:'£',EUR:'€',DKK:'kr',JPY:'¥',HKD:'HK$',SGD:'S$'};
-let holdings=[],watchlist=[],alerts=[],notifications=[];
+let holdings=[],alerts=[],watchlist=[],groups=[],ledger=[],closedPositions=[];
 
 function fmt(n){const s=SYM[currency]||'$';const r=Math.abs(n||0)*FX[currency];return(n<0?'-':'')+s+r.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}
 function fmtPct(n){return(n>=0?'+':'')+n.toFixed(2)+'%'}
-function fmtPrice(n){return(SYM[currency]||'$')+(Math.abs(n||0)*FX[currency]).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}
+function fmtPrice(n,ccy){const c=ccy||currency;const s=SYM[c]||'$';const rate=FX[c]||1;return s+(Math.abs(n||0)*rate).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}
 
 async function apiFetch(path,opts={}){
   const res=await fetch(`${API}${path}`,{...opts,
@@ -275,53 +313,58 @@ function enterApp(){
   const initials=(currentUser?.name||'U').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   document.getElementById('userAvatar').textContent=initials;
   document.getElementById('userName').textContent=currentUser?.name?.split(' ')[0]||'User';
-  loadHoldings();loadAlerts();loadWatchlist();
+  loadAll();
 }
 function doLogout(){
   TOKEN=null;currentUser=null;
   localStorage.removeItem('apexToken');localStorage.removeItem('apexUser');
-  holdings=[];watchlist=[];alerts=[];
+  holdings=[];alerts=[];watchlist=[];groups=[];ledger=[];closedPositions=[];
   document.getElementById('appView').style.display='none';
   document.getElementById('authView').style.display='block';
   showLogin();
 }
+
+async function loadAll(){
+  try{const d=await apiFetch('/holdings');holdings=d.holdings||[];}catch(e){holdings=[];}
+  try{const d=await apiFetch('/alerts');alerts=d.alerts||[];}catch(e){alerts=[];}
+  try{const d=await apiFetch('/watchlist');watchlist=d.watchlist||[];}catch(e){watchlist=[];}
+  try{const d=await apiFetch('/groups');groups=d.groups||[];}catch(e){groups=[];}
+  render();
+}
 async function loadHoldings(){
-  try{const d=await apiFetch('/holdings');holdings=d.holdings||[];render();}
-  catch(e){holdings=[];render();}
+  try{const d=await apiFetch('/holdings');holdings=d.holdings||[];render();}catch(e){}
 }
-async function loadAlerts(){
-  try{const d=await apiFetch('/alerts');alerts=d.alerts||[];if(view==='alerts'||view==='portfolio')render();}
-  catch(e){alerts=[];}
-}
-async function loadWatchlist(){
-  try{const d=await apiFetch('/watchlist');watchlist=d.watchlist||[];if(view==='watchlist')render();}
-  catch(e){watchlist=[];}
-}
+
+const NAV_VIEWS=['portfolio','ledger','closed','groups','alerts','watchlist'];
 function setView(v){
   view=v;
-  document.querySelectorAll('.nav-btn').forEach((b,i)=>{b.classList.toggle('active',['portfolio','watchlist','alerts','events'][i]===v);});
+  document.querySelectorAll('.nav-btn').forEach((b,i)=>{b.classList.toggle('active',NAV_VIEWS[i]===v);});
   render();
 }
 function render(){
   const el=document.getElementById('mainContent');
   if(view==='portfolio') el.innerHTML=renderPortfolio();
-  else if(view==='watchlist') el.innerHTML=renderWatchlist();
+  else if(view==='ledger'){el.innerHTML=renderLoading('Transaction Ledger');loadLedger();}
+  else if(view==='closed'){el.innerHTML=renderLoading('Closed Positions');loadClosed();}
+  else if(view==='groups'){el.innerHTML=renderLoading('Portfolio Groups');loadGroups();}
   else if(view==='alerts') el.innerHTML=renderAlerts();
-  else if(view==='events') el.innerHTML=renderEvents();
+  else if(view==='watchlist') el.innerHTML=renderWatchlist();
 }
+function renderLoading(t){return `<div class="section-header"><div class="section-title">${t}</div></div><div style="padding:30px;text-align:center;color:var(--text3);font-size:13px">Loading...</div>`;}
+
 function renderPortfolio(){
   if(!holdings.length){
     return `<div class="metrics-row">
       <div class="metric-card"><div class="metric-label">Total Value</div><div class="metric-value">${fmt(0)}</div><div class="metric-sub">0 positions</div></div>
       <div class="metric-card"><div class="metric-label">Total Cost</div><div class="metric-value">${fmt(0)}</div><div class="metric-sub">0 lots</div></div>
-      <div class="metric-card"><div class="metric-label">Unrealized P&L</div><div class="metric-value">${fmt(0)}</div><div class="metric-sub">—</div></div>
-      <div class="metric-card"><div class="metric-label">Realised P&L</div><div class="metric-value">${fmt(0)}</div><div class="metric-sub">—</div></div>
+      <div class="metric-card"><div class="metric-label">Unrealized P&L</div><div class="metric-value">${fmt(0)}</div><div class="metric-sub">-</div></div>
+      <div class="metric-card"><div class="metric-label">Realised P&L</div><div class="metric-value">${fmt(0)}</div><div class="metric-sub">-</div></div>
       <div class="metric-card"><div class="metric-label">Active Alerts</div><div class="metric-value">${alerts.filter(a=>a.status==='active').length}</div><div class="metric-sub">${alerts.length} total</div></div>
     </div>
     <div class="empty-state">
       <div style="font-size:34px;margin-bottom:12px">📈</div>
       <div style="font-size:16px;font-weight:700;margin-bottom:6px">Your portfolio is empty</div>
-      <div style="font-size:13px;color:var(--text3);margin-bottom:20px;max-width:380px;margin-left:auto;margin-right:auto">Import your Netwealth CSV to load your full history, or add a lot manually to get started.</div>
+      <div style="font-size:13px;color:var(--text3);margin-bottom:20px">Import your Netwealth CSV or add a lot manually.</div>
       <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
         <button class="import-btn" onclick="openImport()">↑ Import Netwealth CSV</button>
         <button class="addlot-btn" onclick="openAddLot()">+ Add Lot</button>
@@ -336,51 +379,214 @@ function renderPortfolio(){
     <div class="metric-card"><div class="metric-label">Total Value</div><div class="metric-value">${fmt(totalValue)}</div><div class="metric-sub">${holdings.length} positions</div></div>
     <div class="metric-card"><div class="metric-label">Total Cost</div><div class="metric-value">${fmt(totalCost)}</div><div class="metric-sub">${holdings.reduce((s,h)=>s+(h.lot_count||0),0)} lots</div></div>
     <div class="metric-card"><div class="metric-label">Unrealized P&L</div><div class="metric-value ${totalGL>=0?'pos':'neg'}">${fmt(totalGL)}</div><div class="metric-sub ${totalGL>=0?'pos':'neg'}">${fmtPct(totalGLPct)}</div></div>
-    <div class="metric-card"><div class="metric-label">Day P&L</div><div class="metric-value">—</div><div class="metric-sub">—</div></div>
+    <div class="metric-card"><div class="metric-label">Realised P&L</div><div class="metric-value pos" id="realisedMetric">...</div><div class="metric-sub">all time</div></div>
     <div class="metric-card"><div class="metric-label">Active Alerts</div><div class="metric-value">${alerts.filter(a=>a.status==='active').length}</div><div class="metric-sub">${alerts.length} total</div></div>
   </div>`;
+  apiFetch('/holdings/realised').then(d=>{const el=document.getElementById('realisedMetric');if(el&&d.total!=null){el.textContent=fmt(d.total);el.className='metric-value '+(d.total>=0?'pos':'neg');}}).catch(()=>{});
   const rows=holdings.map(h=>`<tr>
-    <td><div class="ticker">${h.ticker}</div><div class="co-name">${h.company_name||''}</div></td>
+    <td>
+      <div class="ticker">${h.ticker}</div>
+      <div class="co-name">${h.company_name||''}</div>
+      <div style="margin-top:6px">${(h.lots||[]).map(l=>`<div class="lot-row">
+        <span style="font-family:var(--mono);font-size:11px">${l.remaining_qty||l.quantity} shares @ ${fmtPrice(l.cost_per_share,h.currency)} · ${l.trade_date||''}</span>
+        <button class="row-btn" onclick="deleteLot(${l.buy_txn_id||l.id},'${h.ticker}')">✕</button>
+      </div>`).join('')}</div>
+    </td>
     <td class="r">${(h.total_qty||0).toLocaleString()}</td>
-    <td class="r">${fmtPrice(h.avg_cost||0)}</td>
-    <td class="r">${fmtPrice(h.currentPrice||0)}</td>
-    <td class="r">${fmtPrice(h.currentValue||0)}</td>
+    <td class="r">${fmtPrice(h.avg_cost||0,h.currency)}<div style="font-size:10px;color:var(--text3)">${h.currency||'AUD'}</div></td>
+    <td class="r">${fmtPrice(h.currentPrice||0,h.currency)}</td>
+    <td class="r">${fmt(h.currentValue||0)}</td>
     <td class="r ${(h.unrealizedGL||0)>=0?'pos':'neg'}">${fmt(h.unrealizedGL||0)}</td>
+    <td class="r"><button class="addlot-btn" style="font-size:11px;padding:3px 8px" onclick="openAddLotFor('${h.ticker}','${(h.company_name||'').replace(/'/g,"\\'")}','${h.currency||'AUD'}')">+lot</button></td>
   </tr>`).join('');
   return metrics+`<div>
-    <div class="section-header" style="margin-bottom:10px"><div class="section-title">Holdings (${holdings.length})</div></div>
+    <div class="section-header" style="margin-bottom:10px">
+      <div class="section-title">Holdings (${holdings.length})</div>
+      <button onclick="loadHoldings()" style="font-size:11px;padding:4px 10px;background:var(--surface2);border:1px solid var(--border2);color:var(--text2);border-radius:var(--r);cursor:pointer">↻ Refresh</button>
+    </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Ticker</th><th class="r">Qty</th><th class="r">Avg Cost</th><th class="r">Price</th><th class="r">Value</th><th class="r">Unreal. G/L</th></tr></thead>
+      <thead><tr><th>Ticker / Lots</th><th class="r">Qty</th><th class="r">Avg Cost</th><th class="r">Price</th><th class="r">Value (${currency})</th><th class="r">Unreal. G/L</th><th class="r">Add</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
   </div>`;
 }
+
+async function deleteLot(txnId,ticker){
+  if(!confirm('Delete this lot of '+ticker+'? This cannot be undone.')) return;
+  try{
+    await apiFetch('/transactions/'+txnId,{method:'DELETE'});
+    toast('Lot deleted','Lot removed from '+ticker,'ok');
+    await loadHoldings();
+  }catch(e){toast('Error',e.message,'err');}
+}
+
+async function loadLedger(){
+  const el=document.getElementById('mainContent');
+  try{
+    const data=await apiFetch('/transactions');
+    ledger=data.transactions||[];
+    const typeColor={buy:'var(--green)',sell:'var(--red)',dividend:'var(--blue)',fee:'var(--text3)'};
+    const rows=ledger.map(t=>`<tr>
+      <td style="font-family:var(--mono);font-size:11px">${t.trade_date}</td>
+      <td><span style="padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;background:${t.type==='buy'?'rgba(34,197,94,.12)':t.type==='sell'?'rgba(239,68,68,.12)':'rgba(59,130,246,.12)'};color:${typeColor[t.type]||'var(--blue)'}">${t.type}</span></td>
+      <td><span class="ticker">${t.ticker}</span></td>
+      <td class="r">${t.quantity||'-'}</td>
+      <td class="r">${t.price?fmtPrice(t.price,t.currency):'-'}</td>
+      <td class="r">${t.currency||''}</td>
+      <td class="r ${(t.realized_gl||0)>=0?'pos':'neg'}">${t.realized_gl!=null?fmt(t.realized_gl):'-'}</td>
+      <td style="font-size:10px;color:var(--text3)">${t.source||''}</td>
+      <td class="r"><button class="row-btn" onclick="deleteTxn(${t.id})">✕</button></td>
+    </tr>`).join('');
+    el.innerHTML=`<div class="section-header" style="margin-bottom:12px"><div class="section-title">Transaction Ledger (${ledger.length})</div></div>
+    ${ledger.length?`<div class="table-wrap"><table>
+      <thead><tr><th>Date</th><th>Type</th><th>Ticker</th><th class="r">Qty</th><th class="r">Price</th><th class="r">Ccy</th><th class="r">Realised</th><th>Source</th><th class="r">Del</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`:'<div class="empty-state"><div style="font-size:13px;color:var(--text3)">No transactions yet.</div></div>'}`;
+  }catch(e){el.innerHTML=`<div style="padding:20px;color:var(--red)">${e.message}</div>`;}
+}
+async function deleteTxn(id){
+  if(!confirm('Delete this transaction? Holdings will be recalculated.')) return;
+  try{await apiFetch('/transactions/'+id,{method:'DELETE'});toast('Deleted','Ledger updated','ok');loadLedger();loadHoldings();}
+  catch(e){toast('Error',e.message,'err');}
+}
+
+async function loadClosed(){
+  const el=document.getElementById('mainContent');
+  try{
+    const data=await apiFetch('/holdings/closed');
+    closedPositions=data.closed||[];
+    if(!closedPositions.length){
+      el.innerHTML=`<div class="section-header"><div class="section-title">Closed Positions</div></div>
+        <div class="empty-state"><div style="font-size:13px;color:var(--text3)">No closed positions yet.</div></div>`;
+      return;
+    }
+    const totalRealised=closedPositions.reduce((s,p)=>s+p.realised_gl,0);
+    const rows=closedPositions.map(p=>`<tr>
+      <td><div class="ticker">${p.ticker}</div><div class="co-name">${p.company_name||''}</div></td>
+      <td class="r">${p.shares_bought}</td><td class="r">${p.shares_sold}</td>
+      <td class="r">${fmtPrice(p.avg_buy)}</td><td class="r">${fmtPrice(p.avg_sell)}</td>
+      <td class="r">${fmt(p.total_cost)}</td><td class="r">${fmt(p.total_proceeds)}</td>
+      <td class="r ${p.realised_gl>=0?'pos':'neg'}">${fmt(p.realised_gl)}<div style="font-size:10px">${p.realised_pct>=0?'+':''}${p.realised_pct.toFixed(1)}%</div></td>
+      <td style="font-size:10px;color:var(--text3)">${p.first_buy_date||''} → ${p.final_sell_date||''}</td>
+    </tr>`).join('');
+    el.innerHTML=`<div class="section-header" style="margin-bottom:12px">
+      <div class="section-title">Closed Positions (${closedPositions.length})</div>
+      <div style="font-family:var(--mono);font-size:13px" class="${totalRealised>=0?'pos':'neg'}">Realised: ${fmt(totalRealised)}</div>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Ticker</th><th class="r">Bought</th><th class="r">Sold</th><th class="r">Avg Buy</th><th class="r">Avg Sell</th><th class="r">Cost</th><th class="r">Proceeds</th><th class="r">Realised</th><th>Period</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  }catch(e){el.innerHTML=`<div style="padding:20px;color:var(--red)">${e.message}</div>`;}
+}
+
+async function loadGroups(){
+  const el=document.getElementById('mainContent');
+  try{
+    const data=await apiFetch('/groups');groups=data.groups||[];
+    const rows=groups.map(g=>`<div class="group-row">
+      <div class="group-dot" style="background:${g.color}"></div>
+      <input class="group-name-input" value="${g.name}" onchange="renameGroup(${g.id},this.value)" />
+      <input type="color" value="${g.color}" onchange="recolorGroup(${g.id},this.value)" style="width:28px;height:28px;border:none;background:none;cursor:pointer;padding:0" />
+      <span style="font-size:11px;color:var(--text3)">Target:</span>
+      <input type="number" value="${g.target_pct||0}" min="0" max="100" style="width:50px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:4px 6px;border-radius:var(--r);font-size:12px;font-family:var(--mono)" onchange="retargetGroup(${g.id},this.value)" />
+      <span style="font-size:11px;color:var(--text3)">%</span>
+      <button class="row-btn" onclick="deleteGroup(${g.id})" style="margin-left:auto">✕</button>
+    </div>`).join('');
+    el.innerHTML=`<div class="section-header" style="margin-bottom:14px"><div class="section-title">Portfolio Groups</div></div>
+    <div class="add-row">
+      <input class="add-input" id="newGroupName" placeholder="New group name (e.g. AI Bottlenecks)" onkeypress="if(event.key==='Enter')createGroup()" />
+      <button class="add-btn" onclick="createGroup()">+ Add</button>
+    </div>
+    <div>${rows||'<div style="color:var(--text3);font-size:13px">No groups yet. Create one above.</div>'}</div>
+    <div style="margin-top:10px;font-size:11px;color:var(--text3)">Rename inline · Set target % · Assign holdings via the portfolio tab.</div>`;
+  }catch(e){el.innerHTML=`<div style="padding:20px;color:var(--red)">${e.message}</div>`;}
+}
+async function createGroup(){
+  const inp=document.getElementById('newGroupName');const name=(inp.value||'').trim();if(!name)return;
+  try{await apiFetch('/groups',{method:'POST',body:{name}});toast('Created',name,'ok');loadGroups();}
+  catch(e){toast('Error',e.message,'err');}
+}
+async function renameGroup(id,name){try{await apiFetch('/groups/'+id,{method:'PUT',body:{name}});}catch(e){}}
+async function recolorGroup(id,color){try{await apiFetch('/groups/'+id,{method:'PUT',body:{color}});}catch(e){}}
+async function retargetGroup(id,targetPct){try{await apiFetch('/groups/'+id,{method:'PUT',body:{targetPct:parseFloat(targetPct)||0}});}catch(e){}}
+async function deleteGroup(id){
+  if(!confirm('Delete this group?')) return;
+  try{await apiFetch('/groups/'+id,{method:'DELETE'});toast('Deleted','Group removed','ok');loadGroups();}
+  catch(e){toast('Error',e.message,'err');}
+}
+
+function renderAlerts(){
+  if(!alerts.length) return `<div class="section-header" style="margin-bottom:14px">
+    <div class="section-title">Alerts (0)</div>
+    <button class="btn-primary" style="font-size:11px;padding:6px 14px" onclick="openAlert()">+ New Alert</button>
+  </div><div class="empty-state"><div style="font-size:13px;color:var(--text3)">No alerts yet.</div></div>`;
+  const items=alerts.map(a=>`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:12px 16px;display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap">
+    <strong style="font-size:13px">${a.ticker}</strong>
+    <span style="font-size:12px;color:var(--text2)">${a.kind||'alert'} ${a.direction||''} ${fmtPrice(a.threshold)}</span>
+    <span style="font-size:11px;font-family:var(--mono);color:${a.status==='active'?'var(--green)':'var(--amber)'}">${a.status}</span>
+    <button class="row-btn" style="margin-left:auto" onclick="deleteAlert(${a.id})">✕</button>
+  </div>`).join('');
+  return `<div class="section-header" style="margin-bottom:14px">
+    <div class="section-title">Alerts (${alerts.length})</div>
+    <button class="btn-primary" style="font-size:11px;padding:6px 14px" onclick="openAlert()">+ New Alert</button>
+  </div>${items}`;
+}
+function openAlert(ticker){
+  document.getElementById('alertTicker').value=ticker||'';
+  document.getElementById('alertThreshold').value='';
+  document.getElementById('alertEmail').value=currentUser?.email||'';
+  document.getElementById('alertModal').style.display='flex';
+}
+async function saveAlert(){
+  const ticker=document.getElementById('alertTicker').value.toUpperCase().trim();
+  const kind=document.getElementById('alertKind').value;
+  const threshold=parseFloat(document.getElementById('alertThreshold').value);
+  const email=document.getElementById('alertEmail').value;
+  if(!ticker||isNaN(threshold)){toast('Missing fields','Fill ticker and threshold','err');return;}
+  const direction=['buy_below','stop_loss','review_below'].includes(kind)?'below':'above';
+  try{
+    await apiFetch('/alerts',{method:'POST',body:{ticker,kind,direction,threshold,email}});
+    closeModal('alertModal');toast('Alert saved',kind+' alert for '+ticker,'ok');
+    const d=await apiFetch('/alerts');alerts=d.alerts||[];render();
+  }catch(e){toast('Error',e.message,'err');}
+}
+async function deleteAlert(id){
+  try{await apiFetch('/alerts/'+id,{method:'DELETE'});const d=await apiFetch('/alerts');alerts=d.alerts||[];render();}
+  catch(e){toast('Error',e.message,'err');}
+}
+
 function renderWatchlist(){
   return `<div class="section-header" style="margin-bottom:14px"><div class="section-title">Watchlist (${watchlist.length})</div></div>
-  <div class="empty-state"><div style="font-size:13px;color:var(--text3)">Your watchlist is empty.</div></div>`;
+  <div class="add-row">
+    <input class="add-input" id="watchInput" placeholder="Add ticker (e.g. SNOW or MTO.AX)" onkeypress="if(event.key==='Enter')addWatch()" />
+    <button class="add-btn" onclick="addWatch()">+ Add</button>
+  </div>
+  ${watchlist.length?watchlist.map(w=>`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:12px 16px;display:flex;align-items:center;gap:12px;margin-bottom:8px">
+    <strong>${w.ticker}</strong><span style="font-size:12px;color:var(--text2)">${w.company_name||''}</span>
+    <button class="row-btn" style="margin-left:auto" onclick="removeWatch('${w.ticker}')">✕</button>
+  </div>`).join(''):'<div class="empty-state"><div style="font-size:13px;color:var(--text3)">Your watchlist is empty.</div></div>'}`;
 }
-function renderAlerts(){
-  if(!alerts.length) return `<div class="section-header" style="margin-bottom:14px"><div class="section-title">Price Alerts (0)</div></div>
-    <div class="empty-state"><div style="font-size:13px;color:var(--text3)">No alerts yet.</div></div>`;
-  const items=alerts.map(a=>`<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:12px 16px;margin-bottom:8px">
-    <strong>${a.ticker}</strong> · ${a.kind||'alert'} ${a.direction||''} ${fmtPrice(a.threshold)}
-  </div>`).join('');
-  return `<div class="section-header" style="margin-bottom:14px"><div class="section-title">Price Alerts (${alerts.length})</div></div>${items}`;
+async function addWatch(){
+  const inp=document.getElementById('watchInput');
+  const ticker=(inp.value||'').toUpperCase().trim();if(!ticker)return;
+  try{await apiFetch('/watchlist',{method:'POST',body:{ticker}});inp.value='';toast('Added',ticker+' added','ok');const d=await apiFetch('/watchlist');watchlist=d.watchlist||[];render();}
+  catch(e){toast('Error',e.message,'err');}
 }
-function renderEvents(){
-  return `<div class="section-header" style="margin-bottom:14px"><div class="section-title">Corporate Events</div></div>
-  <div class="empty-state"><div style="font-size:13px;color:var(--text3)">No upcoming events yet.</div></div>`;
+async function removeWatch(ticker){
+  try{await apiFetch('/watchlist/'+ticker,{method:'DELETE'});const d=await apiFetch('/watchlist');watchlist=d.watchlist||[];render();}
+  catch(e){toast('Error',e.message,'err');}
 }
-let tickerCurrency='USD';
-function openAddLot(){
-  tickerCurrency='USD';
-  document.getElementById('lotTicker').value='';
-  document.getElementById('lotCompany').value='';
+
+let tickerCurrency='USD',costManuallyEdited=false;
+function openAddLot(){openAddLotFor('','','AUD');}
+function openAddLotFor(ticker,company,ccy){
+  tickerCurrency=ccy||'AUD';
+  document.getElementById('lotTicker').value=ticker||'';
+  document.getElementById('lotCompany').value=company||'';
   document.getElementById('lotQty').value='';
   document.getElementById('lotCost').value='';
   document.getElementById('lotDate').value=new Date().toISOString().split('T')[0];
   document.getElementById('lotNotes').value='';
-  document.getElementById('lotCurrency').value='AUD';
+  document.getElementById('lotCurrency').value=tickerCurrency;
   document.getElementById('tickerSuggest').style.display='none';
   document.getElementById('companySuggest').style.display='none';
   document.getElementById('priceHint').style.display='none';
@@ -402,138 +608,112 @@ async function saveLot(){
   try{
     await apiFetch('/transactions',{method:'POST',body:{ticker,companyName:company,type:'buy',quantity:qty,price:cost,currency:lotCurrency,tradeDate:date,notes,source:'manual'}});
     closeModal('addLotModal');
-    toast('Lot added',`${qty} ${ticker} @ ${cost.toFixed(2)} ${lotCurrency}`,'ok');
+    toast('Lot added',qty+' '+ticker+' @ '+cost.toFixed(2)+' '+lotCurrency,'ok');
     await loadHoldings();
   }catch(e){toast('Error',e.message,'err');}
 }
-let suggestTimer=null,costManuallyEdited=false;
+
+let suggestTimer=null;
 function debounceSuggest(fn){clearTimeout(suggestTimer);suggestTimer=setTimeout(fn,220);}
 async function searchSymbols(q){
-  try{const d=await apiFetch(`/lookup/search?q=${encodeURIComponent(q)}`);return d.results||[];}
-  catch(e){return[];}
+  try{const d=await apiFetch('/lookup/search?q='+encodeURIComponent(q));return d.results||[];}catch(e){return[];}
 }
 function renderSuggest(boxId,results,onPick){
   const box=document.getElementById(boxId);
-  if(!results.length){box.style.display='none';box.innerHTML='';return;}
-  box.innerHTML=results.map((r,i)=>
-    `<div class="suggest-item" onmousedown="event.preventDefault()" onclick="__pick_${boxId}(${i})">
-      <span class="suggest-sym">${r.symbol}</span>
-      <span class="suggest-name">${r.name}</span>
-      <span class="suggest-ccy">${r.currency||'USD'}</span>
-    </div>`).join('');
+  if(!results.length){box.style.display='none';return;}
+  box.innerHTML=results.map((r,i)=>'<div class="suggest-item" onmousedown="event.preventDefault()" onclick="__pick_'+boxId+'('+i+')"><span class="suggest-sym">'+r.symbol+'</span><span class="suggest-name">'+r.name+'</span><span class="suggest-ccy">'+(r.currency||'USD')+'</span></div>').join('');
   box.style.display='block';
-  window[`__pick_${boxId}`]=(idx)=>{onPick(results[idx]);box.style.display='none';};
+  window['__pick_'+boxId]=(idx)=>{onPick(results[idx]);box.style.display='none';};
 }
 function onTickerInput(el){
-  el.value=el.value.toUpperCase();
-  const q=el.value.trim();
+  el.value=el.value.toUpperCase();const q=el.value.trim();
   if(q.length<1){document.getElementById('tickerSuggest').style.display='none';return;}
-  debounceSuggest(async()=>{const r=await searchSymbols(q);renderSuggest('tickerSuggest',r,pickTicker);});
+  debounceSuggest(async()=>{renderSuggest('tickerSuggest',await searchSymbols(q),pickTicker);});
 }
 function pickTicker(r){
   document.getElementById('lotTicker').value=r.symbol;
   document.getElementById('lotCompany').value=r.name;
   tickerCurrency=r.currency||'USD';
   const sel=document.getElementById('lotCurrency');
-  if([...sel.options].some(o=>o.value===tickerCurrency)) sel.value=tickerCurrency;
-  costManuallyEdited=false;
-  fetchHistorical();
+  if([...sel.options].some(o=>o.value===tickerCurrency))sel.value=tickerCurrency;
+  costManuallyEdited=false;fetchHistorical();
 }
 function onTickerBlur(){
   setTimeout(()=>{document.getElementById('tickerSuggest').style.display='none';},150);
   const ticker=document.getElementById('lotTicker').value.trim().toUpperCase();
-  const companyEl=document.getElementById('lotCompany');
-  if(ticker&&!companyEl.value.trim()){
-    apiFetch(`/lookup/resolve?ticker=${encodeURIComponent(ticker)}`)
-      .then(d=>{
-        if(d.name) companyEl.value=d.name;
-        if(d.currency){tickerCurrency=d.currency;const sel=document.getElementById('lotCurrency');if([...sel.options].some(o=>o.value===d.currency)) sel.value=d.currency;}
-        costManuallyEdited=false;fetchHistorical();
-      }).catch(()=>{});
-  } else {fetchHistorical();}
+  const compEl=document.getElementById('lotCompany');
+  if(ticker&&!compEl.value.trim()){
+    apiFetch('/lookup/resolve?ticker='+encodeURIComponent(ticker)).then(d=>{
+      if(d.name)compEl.value=d.name;
+      if(d.currency){tickerCurrency=d.currency;const s=document.getElementById('lotCurrency');if([...s.options].some(o=>o.value===d.currency))s.value=d.currency;}
+      costManuallyEdited=false;fetchHistorical();
+    }).catch(()=>{});
+  } else fetchHistorical();
 }
 function onCompanyInput(el){
-  const q=el.value.trim();
-  if(q.length<2){document.getElementById('companySuggest').style.display='none';return;}
-  debounceSuggest(async()=>{const r=await searchSymbols(q);renderSuggest('companySuggest',r,pickCompany);});
+  const q=el.value.trim();if(q.length<2){document.getElementById('companySuggest').style.display='none';return;}
+  debounceSuggest(async()=>{renderSuggest('companySuggest',await searchSymbols(q),pickCompany);});
 }
 function pickCompany(r){
-  document.getElementById('lotTicker').value=r.symbol;
-  document.getElementById('lotCompany').value=r.name;
-  tickerCurrency=r.currency||'USD';
-  const sel=document.getElementById('lotCurrency');
-  if([...sel.options].some(o=>o.value===tickerCurrency)) sel.value=tickerCurrency;
+  document.getElementById('lotTicker').value=r.symbol;document.getElementById('lotCompany').value=r.name;
+  tickerCurrency=r.currency||'USD';const sel=document.getElementById('lotCurrency');
+  if([...sel.options].some(o=>o.value===tickerCurrency))sel.value=tickerCurrency;
   costManuallyEdited=false;fetchHistorical();
 }
 function onCompanyBlur(){setTimeout(()=>{document.getElementById('companySuggest').style.display='none';},150);}
 function onDateChange(){costManuallyEdited=false;fetchHistorical();}
+
 const FX_TO_AUD={USD:1.54,GBP:1.95,AUD:1,EUR:1.65,DKK:0.22,JPY:0.0103,HKD:0.20,SGD:1.14};
 const CCY_SYM={USD:'US$',GBP:'£',AUD:'A$',EUR:'€',DKK:'kr',JPY:'¥',HKD:'HK$',SGD:'S$'};
 async function fetchHistorical(){
   const ticker=document.getElementById('lotTicker').value.trim().toUpperCase();
   const date=document.getElementById('lotDate').value;
-  const hint=document.getElementById('priceHint');
-  const costEl=document.getElementById('lotCost');
-  if(!ticker||!date) return;
-  if(costManuallyEdited&&costEl.value) return;
-  hint.style.display='block';
-  hint.style.color='var(--text3)';
-  hint.textContent=`Fetching ${ticker} close for ${date}…`;
+  const hint=document.getElementById('priceHint');const costEl=document.getElementById('lotCost');
+  if(!ticker||!date)return;if(costManuallyEdited&&costEl.value)return;
+  hint.style.display='block';hint.style.color='var(--text3)';hint.textContent='Fetching '+ticker+' close for '+date+'...';
   try{
-    const data=await apiFetch(`/lookup/historical?ticker=${encodeURIComponent(ticker)}&date=${date}`);
+    const data=await apiFetch('/lookup/historical?ticker='+encodeURIComponent(ticker)+'&date='+date);
     if(data.close){
       const nativeCcy=data.currency||tickerCurrency||'USD';
       const nativePrice=data.close;
-      const audRate=FX_TO_AUD[nativeCcy]||1.54;
-      const audPrice=nativeCcy==='AUD'?nativePrice:nativePrice*audRate;
+      const audPrice=nativeCcy==='AUD'?nativePrice:nativePrice*(FX_TO_AUD[nativeCcy]||1.54);
       const sym=CCY_SYM[nativeCcy]||'$';
-      costEl.value=nativePrice.toFixed(2);
-      costManuallyEdited=false;
+      costEl.value=nativePrice.toFixed(2);costManuallyEdited=false;
       const sel=document.getElementById('lotCurrency');
-      if([...sel.options].some(o=>o.value===nativeCcy)) sel.value=nativeCcy;
+      if([...sel.options].some(o=>o.value===nativeCcy))sel.value=nativeCcy;
       hint.style.color='var(--green)';
-      if(nativeCcy==='AUD'){
-        hint.textContent=`✓ ${data.date}: A$${nativePrice.toFixed(2)} AUD`;
-      } else {
-        hint.textContent=`✓ ${data.date}: ${sym}${nativePrice.toFixed(2)} ${nativeCcy} · ≈ A$${audPrice.toFixed(2)} AUD`;
-      }
-    } else {
-      hint.style.color='var(--text3)';
-      hint.textContent='No historical price found — enter cost manually';
-    }
-  }catch(e){
-    hint.style.color='var(--text3)';
-    hint.textContent="Couldn't fetch price — enter cost manually";
-  }
+      hint.textContent=nativeCcy==='AUD'?'✓ '+data.date+': A$'+nativePrice.toFixed(2)+' AUD':'✓ '+data.date+': '+sym+nativePrice.toFixed(2)+' '+nativeCcy+' · ≈ A$'+audPrice.toFixed(2)+' AUD';
+    }else{hint.style.color='var(--text3)';hint.textContent='No price found - enter manually';}
+  }catch(e){hint.style.color='var(--text3)';hint.textContent="Couldn't fetch price - enter manually";}
 }
+
 function openImport(){document.getElementById('importModal').style.display='flex';}
 async function handleNetwealthFile(input){
   const file=input.files[0];if(!file)return;
-  toast('Importing','Reading your Netwealth CSV…','ok');
+  toast('Importing','Reading your Netwealth CSV...','ok');
   const formData=new FormData();formData.append('file',file);
   try{
-    const res=await fetch(`${API}/import/netwealth`,{method:'POST',headers:{Authorization:`Bearer ${TOKEN}`},body:formData});
+    const res=await fetch(API+'/import/netwealth',{method:'POST',headers:{Authorization:'Bearer '+TOKEN},body:formData});
     const data=await res.json();
-    if(!res.ok) throw new Error(data.error||'Import failed');
-    closeModal('importModal');
-    toast('Import complete',data.message,'ok');
-    await loadHoldings();
+    if(!res.ok)throw new Error(data.error||'Import failed');
+    closeModal('importModal');toast('Import complete',data.message,'ok');
+    await loadAll();
   }catch(e){toast('Import failed',e.message,'err');}
 }
+
 function closeModal(id){document.getElementById(id).style.display='none';}
 function setCurrency(c){currency=c;localStorage.setItem('apexCurrency',c);render();}
 let toastTmr;
-function toast(title,msg,type='ok'){
+function toast(title,msg,type){
   const el=document.getElementById('toast');
   document.getElementById('toastTitle').textContent=title;
   document.getElementById('toastMsg').textContent=msg;
-  el.className=`toast ${type}`;el.style.display='block';
+  el.className='toast '+(type||'ok');el.style.display='block';
   clearTimeout(toastTmr);toastTmr=setTimeout(()=>el.style.display='none',3800);
 }
 async function tickPrices(){
   if(!TOKEN||!holdings.length)return;
-  try{const d=await apiFetch('/holdings');holdings=d.holdings||[];if(view==='portfolio')render();}
-  catch(e){}
+  try{const d=await apiFetch('/holdings');holdings=d.holdings||[];if(view==='portfolio')render();}catch(e){}
 }
 if(TOKEN&&currentUser)enterApp();
 setInterval(tickPrices,60000);
