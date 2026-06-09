@@ -35,7 +35,22 @@ function portfolioId(db, userId) {
 
 function cleanTicker(code) {
   if (!code) return null;
-  return code.replace(/\.(ND|NY|LN|CO|AX|ASX)$/i, '').toUpperCase().trim();
+  let c = code.toUpperCase().trim();
+  const dot = c.lastIndexOf('.');
+  if (dot === -1) {
+    return c + '.AX';
+  }
+  const base = c.slice(0, dot);
+  const ex = c.slice(dot + 1);
+  switch (ex) {
+    case 'ND':
+    case 'NY': return base;
+    case 'LN': return base + '.L';
+    case 'CO': return base + '.CO';
+    case 'AX':
+    case 'ASX': return base + '.AX';
+    default: return base;
+  }
 }
 
 function parseNetwealthCSV(buffer) {
