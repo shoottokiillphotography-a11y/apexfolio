@@ -25,8 +25,7 @@ async function getFxToAud(fromCcy) {
       }
     }
   } catch (e) {}
-  const FALLBACK = { USD:1.54, GBP:1.95, EUR:1.65, DKK:0.22, JPY:0.0103, HKD:0.20, SGD:1.14, NZD:0.93, CAD:1.13 };
-  const fb = FALLBACK[ccy] || 1;
+const FALLBACK = { USD:1.42, GBP:1.92, EUR:1.64, DKK:0.22, JPY:0.0098, HKD:0.18, SGD:1.11, NZD:0.86, CAD:1.04, ZAR:0.082 };  const fb = FALLBACK[ccy] || 1;
   if (cached) return cached.rate;
   return fb;
 }
@@ -38,9 +37,14 @@ async function fetchYahooQuote(ticker) {
   const data = await r.json();
   const meta = data?.chart?.result?.[0]?.meta;
   if (!meta || !meta.regularMarketPrice) throw new Error(`No price for ${ticker}`);
-  const price = meta.regularMarketPrice;
-  const prevClose = meta.chartPreviousClose || meta.previousClose || price;
-  const nativeCcy = meta.currency || 'USD';
+ let price = meta.regularMarketPrice;
+  let prevClose = meta.chartPreviousClose || meta.previousClose || price;
+  let nativeCcy = meta.currency || 'USD';
+  if (nativeCcy === 'GBp' || nativeCcy === 'GBX' || nativeCcy === 'ZAc') {
+    price = price / 100;
+    prevClose = prevClose / 100;
+    nativeCcy = nativeCcy === 'ZAc' ? 'ZAR' : 'GBP';
+  }
   return {
     nativePrice: price,
     nativeCcy,
