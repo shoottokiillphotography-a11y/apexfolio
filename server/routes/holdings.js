@@ -1,14 +1,5 @@
 /**
  * Holdings Router — /api/holdings  (Drop 1: derived from the ledger)
- *
- * GET /                  — open holdings with live prices + P&L + group
- * GET /closed            — closed positions
- * GET /realised          — realised gains summary (by position / year)
- * GET /summary/groups    — group allocation vs target
- *
- * NOTE: manual "Add Lot" now posts a BUY transaction (see frontend), so the
- * old POST/PUT/DELETE holding endpoints are superseded by /api/transactions.
- * We keep PUT /:ticker for group assignment + notes for backward-compat.
  */
 
 const express = require('express');
@@ -43,15 +34,20 @@ router.get('/', async (req, res, next) => {
     let prices = {};
     try { prices = await PriceService.getPrices(tickers); } catch {}
 
+    // Cost basis is ALREADY in AUD (Netwealth records AUD prices). Do NOT re-convert it.
+    // Only the live current price needs conversion to AUD (handled by priceService).
     const enriched = holdings.map(h => {
       const pd = prices[h.ticker] || {};
-      const price = pd.price || h.avg_cost || 0;
-      const totalCost = h.cost_total;
-      const currentValue = h.total_qty * price;
+      const priceAUD = pd.price || h.avg_cost || 0;   // live AUD price; fallback to AUD avg cost
+      const totalCost = h.cost_total;                 // already AUD from import
+      const currentValue = h.total_qty * priceAUD;    // AUD
       const unrealizedGL = currentValue - totalCost;
       return {
         ...h,
-        currentPrice: price,
+        currency: 'AUD',
+        nativeCurrency: pd.nativeCcy || h.currency || 'AUD',
+        nativePrice: pd.nativePrice || null,
+        currentPrice: priceAUD,
         priceChange: pd.change || 0,
         priceChangePct: pd.changePct || 0,
         totalCost,
