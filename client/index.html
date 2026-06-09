@@ -164,11 +164,7 @@ tr:last-child td{border-bottom:none}
       </div>
     </div>
     <div class="topbar-right">
-      <select class="currency-select" onchange="setCurrency(this.value)">
-        <option value="USD">USD $</option>
-        <option value="AUD" selected>AUD $</option>
-        <option value="GBP">GBP £</option>
-      </select>
+      <span class="currency-select" style="display:inline-flex;align-items:center">AUD $</span>
       <button class="addlot-btn" onclick="openAddLot()">+ Add Lot</button>
       <button class="import-btn" onclick="openImport()">↑ Import</button>
       <button class="user-btn" onclick="doLogout()">
@@ -261,15 +257,15 @@ tr:last-child td{border-bottom:none}
 const API='/api';
 let TOKEN=localStorage.getItem('apexToken')||null;
 let currentUser=JSON.parse(localStorage.getItem('apexUser')||'null');
-let currency=localStorage.getItem('apexCurrency')||'AUD';
+let currency='AUD';
 let view='portfolio';
-const FX={USD:1,AUD:1.54,GBP:0.79,EUR:1.08,DKK:0.14,JPY:0.0067,HKD:0.13,SGD:0.74};
 const SYM={USD:'$',AUD:'A$',GBP:'£',EUR:'€',DKK:'kr',JPY:'¥',HKD:'HK$',SGD:'S$'};
 let holdings=[],alerts=[],watchlist=[],groups=[],ledger=[],closedPositions=[];
 
-function fmt(n){const s=SYM[currency]||'$';const r=Math.abs(n||0)*FX[currency];return(n<0?'-':'')+s+r.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}
+// Backend returns all holding values already converted to AUD. Display as AUD, no re-conversion.
+function fmt(n){return(n<0?'-':'')+'A$'+Math.abs(n||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}
 function fmtPct(n){return(n>=0?'+':'')+n.toFixed(2)+'%'}
-function fmtPrice(n,ccy){const c=ccy||currency;const s=SYM[c]||'$';const rate=FX[c]||1;return s+(Math.abs(n||0)*rate).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}
+function fmtPrice(n,ccy){return'A$'+(Math.abs(n||0)).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',')}
 
 async function apiFetch(path,opts={}){
   const res=await fetch(`${API}${path}`,{...opts,
@@ -405,7 +401,7 @@ function renderPortfolio(){
       <button onclick="loadHoldings()" style="font-size:11px;padding:4px 10px;background:var(--surface2);border:1px solid var(--border2);color:var(--text2);border-radius:var(--r);cursor:pointer">↻ Refresh</button>
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Ticker / Lots</th><th class="r">Qty</th><th class="r">Avg Cost</th><th class="r">Price</th><th class="r">Value (${currency})</th><th class="r">Unreal. G/L</th><th class="r">Add</th></tr></thead>
+      <thead><tr><th>Ticker / Lots</th><th class="r">Qty</th><th class="r">Avg Cost</th><th class="r">Price</th><th class="r">Value (AUD)</th><th class="r">Unreal. G/L</th><th class="r">Add</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
   </div>`;
@@ -702,7 +698,6 @@ async function handleNetwealthFile(input){
 }
 
 function closeModal(id){document.getElementById(id).style.display='none';}
-function setCurrency(c){currency=c;localStorage.setItem('apexCurrency',c);render();}
 let toastTmr;
 function toast(title,msg,type){
   const el=document.getElementById('toast');
