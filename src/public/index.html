@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ApexFolio</title>
+    <meta name="theme-color" content="#0A0A0B">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+    <link rel="apple-touch-icon" href="/favicon-180.png">
+    <link rel="stylesheet" href="/styles.css?v=cleanup-18">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="top-nav" aria-label="Portfolio workspace">
+        <div class="top-nav-brand">
+          <img class="brand-mark" src="/logo.png" alt="ApexFolio" width="34" height="34">
+          <div class="brand-copy">
+            <p class="eyebrow">Portfolio Intelligence</p>
+            <strong>ApexFolio</strong>
+          </div>
+        </div>
+        <nav class="view-tabs" aria-label="Portfolio views">
+          <button class="view-tab active" data-view-tab="dashboard" aria-selected="true" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M4 5.5h7v7H4z"></path>
+                <path d="M13 5.5h7v4.5h-7z"></path>
+                <path d="M13 12h7v6.5h-7z"></path>
+                <path d="M4 14.5h7v4H4z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Dashboard</span>
+          </button>
+          <button class="view-tab" data-view-tab="portfolio" aria-selected="false" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M8 7V5.8c0-1 .8-1.8 1.8-1.8h4.4c1 0 1.8.8 1.8 1.8V7"></path>
+                <path d="M4 7h16v13H4z"></path>
+                <path d="M4 12h16"></path>
+                <path d="M10 12v2h4v-2"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Portfolio</span>
+            <span class="tab-count" id="portfolioTabCount"></span>
+          </button>
+          <button class="view-tab" data-view-tab="research" aria-selected="false" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M5 4.5h6.5c1.4 0 2.5 1.1 2.5 2.5v14c0-1.1-.9-2-2-2H5z"></path>
+                <path d="M19 4.5h-6.5C11.1 4.5 10 5.6 10 7v14c0-1.1.9-2 2-2h7z"></path>
+                <path d="M14 8h4"></path>
+                <path d="M14 11h4"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Research</span>
+            <span class="tab-count" id="researchTabCount"></span>
+          </button>
+          <button class="view-tab" data-view-tab="alerts" aria-selected="false" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7"></path>
+                <path d="M13.7 19a2 2 0 0 1-3.4 0"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Alerts</span>
+            <span class="tab-count alert-count" id="alertsTabCount"></span>
+          </button>
+          <button class="view-tab" data-view-tab="operations" aria-selected="false" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M5 7h14"></path>
+                <path d="M5 17h14"></path>
+                <path d="M8 7a2 2 0 1 0 4 0 2 2 0 0 0-4 0z"></path>
+                <path d="M14 17a2 2 0 1 0 4 0 2 2 0 0 0-4 0z"></path>
+              </svg>
+            </span>
+            <span class="nav-label">Operations</span>
+          </button>
+        </nav>
+        <button class="top-alert-indicator" id="topAlertIndicator" data-action="openAlerts" type="button" hidden>
+          <span class="top-alert-dot"></span>
+          <span id="topAlertText">Alerts</span>
+        </button>
+        <div class="top-nav-status">
+          <span class="status-dot"></span>
+          <span>Live workspace</span>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <header class="app-header">
+          <div>
+            <p class="eyebrow">Investment Portfolio</p>
+            <h1>Command Center</h1>
+          </div>
+          <div class="header-actions">
+            <label class="field compact">
+              <span>Currency</span>
+              <select id="baseCurrency">
+                <option value="USD">USD</option>
+                <option value="AUD">AUD</option>
+                <option value="GBP">GBP</option>
+              </select>
+            </label>
+            <button class="button" id="refreshPrices" type="button">Refresh Prices</button>
+            <button class="button secondary" id="refreshIntl" type="button" title="Fetch fresh ASX / LSE / Copenhagen prices on demand">Refresh International</button>
+            <button class="button secondary" id="autoPricesToggle" type="button" aria-pressed="true">Auto Prices On</button>
+            <label class="field compact dividend-date">
+              <span>Dividend since</span>
+              <input id="dividendFromDate" type="date">
+            </label>
+            <button class="button" id="syncDividends" type="button">Sync Dividends</button>
+            <button class="button secondary" id="refreshEvents" type="button">Refresh Events</button>
+          </div>
+        </header>
+
+        <section class="alert-banner" id="alertBanner" hidden></section>
+
+        <main>
+      <section class="view-panel active" data-view-panel="dashboard">
+        <section class="summary-grid" id="summaryGrid"></section>
+
+        <section class="band dashboard-allocation-card">
+          <div class="band-header">
+            <div>
+              <p class="eyebrow">Allocation overview</p>
+              <h2>Allocation & Concentration</h2>
+              <p class="muted" id="groupDonutTotal"></p>
+            </div>
+            <div class="button-row">
+              <button class="button secondary" data-action="toggleAllocation" type="button">Hide</button>
+              <button class="button primary" data-action="openGroupManager" type="button">Edit Groups</button>
+            </div>
+          </div>
+          <div id="dashboardAllocationSummary" class="collapse-summary"></div>
+          <div class="dashboard-allocation-layout">
+            <div class="allocation-overview-panel">
+              <div id="groupDonut" class="donut-layout"></div>
+            </div>
+            <div class="allocation-target-panel">
+              <div class="section-title">Target versus actual allocation</div>
+              <div id="dashboardAllocationTable" class="allocation-target-table"></div>
+            </div>
+            <div class="concentration-panel">
+              <div class="section-title">Portfolio concentration</div>
+              <div id="concentrationSummary"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="dashboard-stack">
+          <div class="band performance-band dashboard-performance-card" data-performance-card="dashboard">
+            <div class="band-header">
+              <div>
+                <p class="eyebrow">Performance</p>
+                <h2>Compact Performance</h2>
+                <p class="muted" id="portfolioPerformanceStatus">Loading historical performance...</p>
+              </div>
+              <div class="button-row">
+                <button class="button secondary" data-action="togglePerformanceMode" type="button" id="performanceModeToggle">Value</button>
+                <button class="button secondary" data-action="togglePortfolioChart" type="button">Show chart</button>
+                <div class="range-tabs compact-ranges" id="portfolioPerformanceRanges" aria-label="Portfolio performance range"></div>
+              </div>
+            </div>
+            <div id="portfolioPerformanceStats" class="performance-stats compact-performance-stats"></div>
+            <div class="performance-chart-shell compact-chart">
+              <svg id="portfolioPerformanceChart" class="performance-chart" viewBox="0 0 900 220" role="img" aria-label="Portfolio performance chart"></svg>
+            </div>
+          </div>
+          <div class="band market-pulse-card">
+            <div class="band-header">
+              <div>
+                <p class="eyebrow">Market Pulse</p>
+                <h2>Macro Watch</h2>
+                <p class="muted">Indexes, FX, crypto, rates, and user-selected instruments.</p>
+              </div>
+              <button class="button secondary" data-view-jump="operations" data-scroll-target="marketPulseSettingsBand" type="button">Edit Pulse</button>
+            </div>
+            <div id="marketPulseGrid" class="market-pulse-grid"></div>
+          </div>
+        </section>
+
+        <section class="band intelligence-band dashboard-intelligence-band">
+          <div class="band-header">
+            <div>
+              <p class="eyebrow">Portfolio Intelligence</p>
+              <h2>Today’s Command</h2>
+              <p class="muted" id="dashboardIntelligenceStatus">Rules engine active. AI can be connected later.</p>
+            </div>
+            <div class="button-row">
+              <span class="status-pill" id="aiStatusBadge">Rules engine</span>
+              <button class="button secondary" data-action="openRulesEditor" type="button">Edit Rules</button>
+              <button class="button secondary" data-view-jump="alerts" type="button">Open Alerts</button>
+            </div>
+          </div>
+          <div id="dashboardCommand" class="dashboard-command-card"></div>
+          <div class="dashboard-intelligence-grid">
+            <div>
+              <div class="section-title">Risks</div>
+              <div id="dashboardRisks" class="compact-table"></div>
+            </div>
+            <div>
+              <div class="section-title">Opportunities</div>
+              <div id="dashboardOpportunities" class="compact-table"></div>
+            </div>
+            <div>
+              <div class="section-title">Cash Plan</div>
+              <div id="dashboardCashPlan" class="compact-table"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="dashboard-stack">
+          <div class="band">
+            <div class="band-header">
+              <div>
+                <p class="eyebrow">News</p>
+                <h2>Market &amp; Portfolio News</h2>
+                <p class="muted" id="marketNewsStatus"></p>
+              </div>
+              <button class="button secondary" data-action="refreshEvents" type="button">Refresh News</button>
+            </div>
+            <div id="marketNewsTable" class="compact-table"></div>
+          </div>
+          <div class="band">
+            <div class="band-header">
+              <div>
+                <p class="eyebrow">Verified signals</p>
+                <h2>Relevant Signals</h2>
+                <p class="muted" id="signalStatus"></p>
+              </div>
+              <button class="button secondary" data-action="refreshEvents" type="button">Refresh Signals</button>
+            </div>
+            <div id="signalsTable" class="compact-table"></div>
+          </div>
+        </section>
+      </section>
+
+      <section class="view-panel" data-view-panel="portfolio">
+        <section class="band performance-band" data-performance-card="portfolio">
+          <div class="band-header">
+            <div>
+              <p class="eyebrow">Performance</p>
+              <h2>Portfolio Performance</h2>
+              <p class="muted" id="portfolioPerformanceStatusPortfolio">Same historical view, shown here for full holdings work.</p>
+            </div>
+            <div class="button-row">
+              <button class="button secondary" data-action="togglePortfolioChart" type="button">Hide chart</button>
+              <div class="range-tabs" id="portfolioPerformanceRangesPortfolio" aria-label="Portfolio performance range"></div>
+            </div>
+          </div>
+          <div id="portfolioPerformanceStatsPortfolio" class="performance-stats"></div>
+          <div class="performance-chart-shell">
+            <svg id="portfolioPerformanceChartPortfolio" class="performance-chart" viewBox="0 0 900 280" role="img" aria-label="Portfolio performance chart"></svg>
+          </div>
+        </section>
+
+        <section class="two-column">
+          <div class="band" id="allocationCard">
+            <div class="band-header">
+              <div>
+                <h2>Allocation</h2>
+                <span class="muted" id="allocationTotal"></span>
+              </div>
+              <button class="button secondary" data-action="toggleAllocation" type="button">Hide</button>
+            </div>
+            <div id="allocationSummary" class="collapse-summary"></div>
+            <div id="allocationTable"></div>
+          </div>
+
+          <div class="band" id="cashCard">
+            <div class="band-header">
+              <div>
+                <h2>Cash</h2>
+                <span class="muted" id="cashSummary"></span>
+              </div>
+              <button class="button secondary" data-action="toggleCash" type="button">Hide</button>
+            </div>
+            <form class="inline-form cash-add-form" id="cashForm">
+              <select name="currency">
+                <option value="USD">USD</option>
+                <option value="AUD">AUD</option>
+                <option value="GBP">GBP</option>
+                <option value="EUR">EUR</option>
+                <option value="DKK">DKK</option>
+                <option value="IDR">IDR</option>
+              </select>
+              <input name="amount" type="number" step="0.01" placeholder="Amount" required>
+              <button class="button primary" type="submit">Save</button>
+            </form>
+            <div id="cashBalances" class="cash-list"></div>
+          </div>
+        </section>
+
+        <section class="band" id="holdingsBand">
+          <div class="band-header">
+            <h2>Holdings</h2>
+            <div class="button-row">
+              <span class="muted" id="holdingCount"></span>
+              <button class="button primary" id="addLotButton" type="button">Add Lot</button>
+              <button class="button secondary" id="recordSaleButton" type="button">Sell</button>
+            </div>
+          </div>
+          <div class="holdings-controls">
+            <label class="field compact">
+              <span>View</span>
+              <select id="holdingsViewMode">
+                <option value="current">Current View</option>
+                <option value="market">Market Data</option>
+              </select>
+            </label>
+            <label class="field compact">
+              <span>Sort</span>
+              <select id="holdingsSort">
+                <option value="alphabetical">Alphabetical</option>
+                <option value="exposureDesc">Exposure high first</option>
+                <option value="exposureAsc">Exposure low first</option>
+                <option value="unrealizedDesc">Unrealized gain</option>
+                <option value="realizedDesc">Realized gain</option>
+                <option value="dayChangeDesc">Day change %</option>
+                <option value="marketCapDesc">Market cap</option>
+                <option value="volumeDesc">Volume</option>
+              </select>
+            </label>
+            <label class="field compact">
+              <span>Group</span>
+              <select id="holdingsGroup">
+                <option value="none">No grouping</option>
+                <option value="category">By group</option>
+              </select>
+            </label>
+          </div>
+          <div class="table-wrap">
+            <table id="holdingsTable">
+              <thead id="holdingsHead"></thead>
+              <tbody id="holdingsBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="band">
+          <div class="band-header">
+            <h2>Dividends</h2>
+            <div class="button-row">
+              <span class="muted" id="dividendCount"></span>
+              <button class="button secondary" data-action="syncDividends" type="button">Sync Dividends</button>
+            </div>
+          </div>
+          <div id="dividendsTable" class="compact-table"></div>
+        </section>
+
+        <section class="band">
+          <div class="band-header">
+            <div>
+              <h2>Closed Broker Transactions</h2>
+              <p class="muted">Past trades from other brokers stay in realized gains even when you no longer own the ticker.</p>
+            </div>
+            <span class="muted" id="externalTransactionCount"></span>
+          </div>
+          <form class="closed-transaction-form" id="externalTransactionForm">
+            <input name="ticker" placeholder="Ticker" required>
+            <input name="quantity" type="number" step="0.0001" min="0" placeholder="Quantity" required>
+            <input name="buyDate" type="date" required>
+            <input name="buyPrice" type="number" step="0.0001" min="0" placeholder="Buy price" required>
+            <select name="buyCurrency" aria-label="Buy currency">
+              <option value="USD">USD</option>
+              <option value="AUD">AUD</option>
+              <option value="GBP">GBP</option>
+              <option value="EUR">EUR</option>
+              <option value="DKK">DKK</option>
+              <option value="HKD">HKD</option>
+              <option value="CHF">CHF</option>
+              <option value="CAD">CAD</option>
+              <option value="JPY">JPY</option>
+              <option value="SEK">SEK</option>
+              <option value="NOK">NOK</option>
+              <option value="NZD">NZD</option>
+              <option value="SGD">SGD</option>
+            </select>
+            <input name="sellDate" type="date" required>
+            <input name="salePrice" type="number" step="0.0001" min="0" placeholder="Sell price" required>
+            <select name="saleCurrency" aria-label="Sell currency">
+              <option value="USD">USD</option>
+              <option value="AUD">AUD</option>
+              <option value="GBP">GBP</option>
+              <option value="EUR">EUR</option>
+              <option value="DKK">DKK</option>
+              <option value="HKD">HKD</option>
+              <option value="CHF">CHF</option>
+              <option value="CAD">CAD</option>
+              <option value="JPY">JPY</option>
+              <option value="SEK">SEK</option>
+              <option value="NOK">NOK</option>
+              <option value="NZD">NZD</option>
+              <option value="SGD">SGD</option>
+            </select>
+            <input class="wide" name="notes" placeholder="Broker / note">
+            <button class="button primary" type="submit">Save Closed Trade</button>
+          </form>
+          <div id="externalTransactionsTable" class="compact-table"></div>
+        </section>
+      </section>
+
+      <section class="view-panel" data-view-panel="research">
+        <section class="band research-command">
+          <div class="band-header">
+            <div>
+              <p class="eyebrow">Research Desk</p>
+              <h2>Watchlist Intelligence</h2>
+              <p class="muted">Separate idea pipeline, price discipline, alerts, and source-linked events.</p>
+            </div>
+            <div class="button-row">
+              <button class="button secondary" data-action="refreshEvents" type="button">Refresh News</button>
+              <button class="button secondary" data-action="refreshFundamentals" type="button">Refresh Fundamentals</button>
+            </div>
+          </div>
+          <div id="researchMetrics" class="research-metrics"></div>
+        </section>
+
+        <section class="two-column">
+          <div class="band" id="watchlistsBand">
+            <div class="band-header">
+              <h2>Watchlists</h2>
+              <span class="muted" id="watchlistCount"></span>
+            </div>
+            <div id="watchlistOverview" class="watchlist-overview"></div>
+            <div class="watchlist-controls">
+              <label class="field compact">
+                <span>List</span>
+                <select id="watchlistFilter"></select>
+              </label>
+              <form class="inline-form rename-watchlist-form" id="renameWatchlistForm">
+                <input name="name" placeholder="Watchlist name" required>
+                <button class="button secondary" type="submit">Rename</button>
+              </form>
+            </div>
+            <form class="inline-form" id="watchlistForm">
+              <select name="watchlistId" id="watchlistAddList" aria-label="Watchlist"></select>
+              <div class="symbol-field">
+                <input name="ticker" id="watchlistTickerInput" placeholder="Ticker or company name" autocomplete="off" required>
+                <div id="watchlistSymbolResults" class="symbol-autocomplete" hidden></div>
+              </div>
+              <input name="targetPrice" type="number" step="0.01" placeholder="Target">
+              <select name="currency" id="watchlistCurrency">
+                <option value="USD">USD</option>
+                <option value="AUD">AUD</option>
+                <option value="GBP">GBP</option>
+                <option value="EUR">EUR</option>
+                <option value="DKK">DKK</option>
+                <option value="CAD">CAD</option>
+                <option value="HKD">HKD</option>
+                <option value="JPY">JPY</option>
+                <option value="CHF">CHF</option>
+              </select>
+              <button class="button primary" type="submit">Add</button>
+            </form>
+            <div id="watchlistTable" class="compact-table"></div>
+          </div>
+
+          <div class="band">
+            <div class="band-header">
+              <h2>Research Memo</h2>
+            </div>
+            <form class="inline-form" id="memoForm">
+              <select name="ticker" id="memoTicker"></select>
+              <button class="button primary" type="submit">Generate Memo</button>
+            </form>
+            <pre id="memoOutput" class="memo-output"></pre>
+          </div>
+        </section>
+
+        <section class="two-column">
+          <div class="band">
+            <div class="band-header">
+              <div>
+                <p class="eyebrow">Valuation Monitor</p>
+                <h2>Fundamental Metrics</h2>
+                <p class="muted" id="valuationStatus"></p>
+              </div>
+              <button class="button secondary" id="refreshFundamentals" type="button">Refresh Fundamentals</button>
+            </div>
+            <div id="valuationTable" class="compact-table"></div>
+          </div>
+          <div class="band">
+            <div class="band-header">
+              <h2>Corporate Events</h2>
+              <button class="button secondary" data-action="refreshEvents" type="button">Refresh Events</button>
+            </div>
+            <div id="eventsTable" class="compact-table"></div>
+          </div>
+        </section>
+      </section>
+
+      <section class="view-panel" data-view-panel="alerts">
+        <section class="band" id="alertsBand">
+          <div class="band-header">
+            <div>
+              <p class="eyebrow">Alerts</p>
+              <h2>Alert Center</h2>
+              <p class="muted">Review signals only. The app never places trades automatically.</p>
+            </div>
+            <div class="button-row">
+              <button class="button secondary" id="newAlert" type="button">New Alert</button>
+              <button class="button" id="evaluateAlerts" type="button">Evaluate</button>
+              <button class="button secondary" data-action="clearTriggeredAlerts" id="clearTriggeredAlerts" type="button">Clear Triggered</button>
+              <button class="button secondary" data-action="seedStrategyAlerts" type="button">Seed Strategy Alerts</button>
+              <button class="button secondary" data-action="enableDesktopAlerts" type="button">Desktop Alerts</button>
+            </div>
+          </div>
+          <div class="alerts-executed-block" id="alertsExecutedBlock">
+            <div class="section-title">Executed alerts</div>
+            <div id="alertsExecuted" class="executed-list"></div>
+          </div>
+          <div class="alerts-portfolio-block">
+            <div class="section-title">Portfolio alerts (live)</div>
+            <div id="alertsPortfolioOverview" class="portfolio-alert-list"></div>
+          </div>
+          <div class="section-title alerts-all-title">All alerts</div>
+          <div id="alertTabs" class="alert-tabs" role="tablist" aria-label="Alert status filter"></div>
+          <div id="alertsTable" class="compact-table"></div>
+        </section>
+      </section>
+
+      <section class="view-panel" data-view-panel="operations">
+        <section class="band">
+          <div class="band-header">
+            <div>
+              <h2>Import</h2>
+              <p id="providerStatus" class="muted"></p>
+            </div>
+            <form class="upload-form" id="uploadForm">
+              <select name="kind" id="importKind" aria-label="Import type">
+                <option value="auto">Auto</option>
+                <option value="portfolio">Portfolio</option>
+                <option value="watchlist">Watchlist</option>
+                <option value="netwealth_transactions">Netwealth Transactions</option>
+              </select>
+              <label class="check replace-check">
+                <input type="checkbox" name="replace" id="replacePortfolioImport">
+                <span id="replaceImportLabel">Replace portfolio</span>
+              </label>
+              <input type="file" name="file" accept=".csv,.xlsx" required>
+              <input name="watchlistName" placeholder="Watchlist name">
+              <button class="button primary" type="submit">Upload</button>
+            </form>
+            <p class="import-note" id="importReplaceNote">Replace rebuilds portfolio lots, sales, dividends, and cash. Watchlists stay separate.</p>
+          </div>
+          <div class="settings-grid">
+            <form class="settings-card" id="providerKeyForm">
+              <div>
+                <strong>Live Prices</strong>
+                <span>Finnhub market data key</span>
+              </div>
+              <input name="key" type="password" placeholder="Finnhub API key" autocomplete="off" required>
+              <button class="button primary" type="submit">Save Key</button>
+            </form>
+            <form class="settings-card" id="aiSettingsForm">
+              <div>
+                <strong>AI Research</strong>
+                <span>OpenAI or Gemini memo provider</span>
+              </div>
+              <select name="provider" id="aiProvider">
+                <option value="openai">OpenAI / GPT</option>
+                <option value="gemini">Google Gemini</option>
+              </select>
+              <input name="apiKey" type="password" placeholder="Your AI API key" autocomplete="off">
+              <input name="model" id="aiModel" placeholder="Model" value="gpt-5-mini">
+              <button class="button secondary" type="submit">Save AI</button>
+            </form>
+            <div class="settings-card">
+              <div>
+                <strong>Automation</strong>
+                <span id="schedulerStatus">Scheduler status</span>
+              </div>
+              <button class="button primary" id="schedulerToggle" type="button">Turn Scheduler On</button>
+            </div>
+          </div>
+          <div class="import-history-header">
+            <div>
+              <strong>Uploaded files</strong>
+              <span class="muted" id="importHistoryCount"></span>
+            </div>
+            <button class="button secondary" id="toggleImportHistory" type="button" aria-expanded="false">Show</button>
+          </div>
+          <div id="importHistory" class="import-history"></div>
+        </section>
+
+        <section class="two-column operations-settings-grid">
+          <div class="band" id="groupSettingsBand">
+            <div class="band-header">
+              <div>
+                <p class="eyebrow">Allocation Groups</p>
+                <h2>Group Settings</h2>
+                <p class="muted" id="groupTargetWarning"></p>
+              </div>
+              <button class="button primary" data-action="openGroupManager" type="button">Open Group Manager</button>
+            </div>
+            <div id="groupSettingsTable" class="compact-table"></div>
+          </div>
+
+          <div class="band" id="marketPulseSettingsBand">
+            <div class="band-header">
+              <div>
+                <p class="eyebrow">Market Pulse</p>
+                <h2>Pulse Settings</h2>
+                <p class="muted">Choose the macro instruments shown on Dashboard.</p>
+              </div>
+            </div>
+            <form class="inline-form" id="marketPulseForm">
+              <div class="autocomplete-field">
+                <input name="symbol" list="marketPulseSuggestions" placeholder="Code or name e.g. Nasdaq" required autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="marketPulseAutocomplete">
+                <datalist id="marketPulseSuggestions"></datalist>
+                <div id="marketPulseAutocomplete" class="autocomplete-panel" role="listbox" hidden></div>
+              </div>
+              <input name="displayName" placeholder="Display name" required>
+              <select name="category">
+                <option value="Index">Index</option>
+                <option value="FX">FX</option>
+                <option value="Crypto">Crypto</option>
+                <option value="Rate">Rate</option>
+                <option value="Commodity">Commodity</option>
+                <option value="Other">Other</option>
+              </select>
+              <button class="button primary" type="submit">Add</button>
+            </form>
+            <div id="marketPulseSettingsTable" class="compact-table"></div>
+          </div>
+        </section>
+
+        <section class="two-column">
+          <div class="band">
+            <div class="band-header">
+              <h2>Notifications</h2>
+              <button class="button" id="retryNotifications" type="button">Retry</button>
+            </div>
+            <form class="inline-form provider-form" id="emailSettingsForm" action="/api/settings/email" method="post">
+              <select name="provider" id="emailProvider">
+                <option value="brevo">Brevo</option>
+                <option value="sendgrid">SendGrid</option>
+              </select>
+              <input name="apiKey" type="password" placeholder="Email API key" autocomplete="off">
+              <input name="fromEmail" type="email" placeholder="Sender email">
+              <input name="recipientEmail" type="email" placeholder="Send alerts to" required>
+              <button class="button primary" type="submit">Save Email Settings</button>
+            </form>
+            <div id="notificationsTable" class="compact-table"></div>
+          </div>
+
+          <section class="band warnings" id="warningsBand" hidden>
+            <div class="band-header">
+              <h2>Data Warnings</h2>
+            </div>
+            <ul id="warningsList"></ul>
+          </section>
+        </section>
+      </section>
+
+      <section class="view-panel" data-view-panel="stock">
+        <section class="band stock-page">
+          <div class="stock-page-head">
+            <button class="button secondary" data-action="backToPreviousView" type="button">Back</button>
+            <div>
+              <p class="eyebrow">Stock Page</p>
+              <h2 id="stockTitle">Select a ticker</h2>
+              <p class="muted" id="stockSubtitle"></p>
+            </div>
+            <div class="button-row">
+              <button class="button secondary" id="stockRefreshButton" type="button">Refresh Stock Data</button>
+              <button class="button" id="stockAlertButton" type="button">New Alert</button>
+            </div>
+          </div>
+
+          <div id="stockQuoteTiles" class="summary-grid compact-summary"></div>
+
+          <div class="stock-stack">
+            <section class="band performance-band stock-performance-card">
+              <div class="band-header">
+                <div>
+                  <p class="eyebrow">Price Performance</p>
+                  <h2 id="stockPerformanceTitle">Ticker Performance</h2>
+                  <p class="muted" id="stockPerformanceStatus"></p>
+                </div>
+                <div class="range-tabs" id="stockPerformanceRanges" aria-label="Ticker performance range"></div>
+              </div>
+              <div id="stockPerformanceStats" class="performance-stats"></div>
+              <div class="performance-chart-shell">
+                <svg id="stockPerformanceChart" class="performance-chart" viewBox="0 0 900 280" role="img" aria-label="Ticker performance chart"></svg>
+              </div>
+            </section>
+
+            <section class="band">
+              <div class="band-header">
+                <div>
+                  <p class="eyebrow">Company Profile</p>
+                  <h2>Business Summary</h2>
+                </div>
+              </div>
+              <p id="stockBusinessSummary" class="stock-summary-text"></p>
+              <div id="stockProfileFacts" class="profile-facts"></div>
+            </section>
+
+            <section class="band">
+              <div class="band-header">
+                <div>
+                  <p class="eyebrow">Fundamentals</p>
+                  <h2>Recent Valuation Metrics</h2>
+                  <p class="muted" id="stockFundamentalsStatus"></p>
+                </div>
+              </div>
+              <div id="stockFundamentalsGrid" class="fundamentals-grid"></div>
+            </section>
+
+            <section class="stock-cols">
+              <div class="band">
+                <div class="band-header">
+                  <div>
+                    <p class="eyebrow">Your Exposure</p>
+                    <h2>Position, Alerts, Watchlist</h2>
+                  </div>
+                </div>
+                <div id="stockOwnershipTable" class="ownership-list"></div>
+              </div>
+              <div class="band">
+                <div class="band-header">
+                  <h2>Lots</h2>
+                </div>
+                <div id="stockLotsTable" class="compact-table"></div>
+              </div>
+            </section>
+
+            <section class="band">
+              <div class="band-header">
+                <div>
+                  <p class="eyebrow">News &amp; Filings</p>
+                  <h2>Recent Events</h2>
+                </div>
+              </div>
+              <div id="stockEventsTable" class="events-list"></div>
+            </section>
+          </div>
+        </section>
+      </section>
+        </main>
+      </div>
+    </div>
+
+    <dialog id="alertDialog">
+      <form method="dialog" class="dialog-panel" id="alertForm">
+        <div class="dialog-header">
+          <h2>Price Alert</h2>
+          <button class="icon-button" data-close-dialog="alertDialog" onclick="document.getElementById('alertDialog').close()" aria-label="Close" type="button">X</button>
+        </div>
+        <div class="dialog-grid">
+          <label class="field">
+            <span>Ticker</span>
+            <input name="ticker" required>
+          </label>
+          <label class="field">
+            <span>Scope</span>
+            <select name="scope">
+              <option value="EQUITY">Equity</option>
+              <option value="LOT">Lot</option>
+              <option value="WATCHLIST">Watchlist</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Lot</span>
+            <select name="lotId"></select>
+          </label>
+          <label class="field">
+            <span>Direction</span>
+            <select name="direction">
+              <option value="ABOVE">Above</option>
+              <option value="BELOW">Below</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Type</span>
+            <select name="alertType">
+              <option value="PRICE_ALERT">Price Alert</option>
+              <option value="BUY_STARTER">Buy Starter</option>
+              <option value="BUY_ADD">Buy Add</option>
+              <option value="BUY_STRONG">Buy Strong</option>
+              <option value="SPECULATIVE_STARTER">Speculative Starter</option>
+              <option value="SPECULATIVE_ADD">Speculative Add</option>
+              <option value="SPECULATIVE_STRONG">Speculative Strong</option>
+              <option value="REVIEW_TRIM">Review Trim</option>
+              <option value="REVIEW_REDUCE">Review Reduce</option>
+              <option value="RISK_REVIEW">Risk Review</option>
+              <option value="DELETE_OR_IGNORE">Delete / Ignore</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Priority</span>
+            <select name="priority">
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="low">Low</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Threshold</span>
+            <input name="thresholdPrice" type="number" step="0.01" min="0" required>
+          </label>
+          <label class="field">
+            <span>Currency</span>
+            <select name="currency">
+              <option value="USD">USD</option>
+              <option value="AUD">AUD</option>
+              <option value="GBP">GBP</option>
+            </select>
+          </label>
+          <label class="field full">
+            <span>Label</span>
+            <input name="label">
+          </label>
+          <label class="field full">
+            <span>Note</span>
+            <input name="note" placeholder="Reason, thesis check, or risk warning">
+          </label>
+        </div>
+        <menu class="dialog-actions">
+          <button class="button danger ghost" id="alertDeleteBtn" data-delete-current-alert type="button" style="display:none">Delete</button>
+          <button class="button secondary" data-close-dialog="alertDialog" onclick="document.getElementById('alertDialog').close()" type="button">Cancel</button>
+          <button class="button primary" value="default" type="submit">Save Alert</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="lotDialog">
+      <form method="dialog" class="dialog-panel" id="lotForm">
+        <div class="dialog-header">
+          <h2>Add Lot</h2>
+          <button class="icon-button" data-close-dialog="lotDialog" onclick="document.getElementById('lotDialog').close()" aria-label="Close" type="button">X</button>
+        </div>
+        <div class="dialog-grid">
+          <label class="field">
+            <span>Ticker</span>
+            <input name="ticker" required>
+          </label>
+          <label class="field">
+            <span>Segment</span>
+            <select name="categoryId" id="lotCategory"></select>
+          </label>
+          <label class="field">
+            <span>Quantity</span>
+            <input name="quantity" type="number" step="0.0001" min="0" required>
+          </label>
+          <label class="field">
+            <span>Purchase Price</span>
+            <input name="purchasePrice" type="number" step="0.0001" min="0" required>
+          </label>
+          <label class="field">
+            <span>Currency</span>
+            <select name="purchaseCurrency">
+              <option value="USD">USD</option>
+              <option value="AUD">AUD</option>
+              <option value="GBP">GBP</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Purchase Date</span>
+            <input name="purchaseDate" type="date" required>
+          </label>
+          <label class="field full">
+            <span>Notes</span>
+            <input name="notes">
+          </label>
+        </div>
+        <menu class="dialog-actions">
+          <button class="button secondary" data-close-dialog="lotDialog" onclick="document.getElementById('lotDialog').close()" type="button">Cancel</button>
+          <button class="button primary" value="default" type="submit">Save Lot</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="saleDialog">
+      <form method="dialog" class="dialog-panel" id="saleForm">
+        <div class="dialog-header">
+          <h2>Record Sale</h2>
+          <button class="icon-button" data-close-dialog="saleDialog" onclick="document.getElementById('saleDialog').close()" aria-label="Close" type="button">X</button>
+        </div>
+        <div class="dialog-grid">
+          <label class="field">
+            <span>Ticker</span>
+            <input name="ticker" required>
+          </label>
+          <label class="field full">
+            <span>Lot to Sell</span>
+            <select name="lotId"></select>
+            <small class="muted" id="saleLotHint">Choose a specific lot, or leave automatic FIFO for the normal tax-lot order.</small>
+          </label>
+          <label class="field">
+            <span>Quantity Sold</span>
+            <input name="quantity" type="number" step="0.0001" min="0" required>
+          </label>
+          <label class="field">
+            <span>Sale Price</span>
+            <input name="salePrice" type="number" step="0.0001" min="0" required>
+          </label>
+          <label class="field">
+            <span>Currency</span>
+            <select name="saleCurrency">
+              <option value="USD">USD</option>
+              <option value="AUD">AUD</option>
+              <option value="GBP">GBP</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Sale Date</span>
+            <input name="soldAt" type="date" required>
+          </label>
+        </div>
+        <menu class="dialog-actions">
+          <button class="button secondary" data-close-dialog="saleDialog" onclick="document.getElementById('saleDialog').close()" type="button">Cancel</button>
+          <button class="button primary" value="default" type="submit">Record Sale</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="zoneDialog">
+      <form method="dialog" class="dialog-panel" id="zoneForm">
+        <div class="dialog-header">
+          <h2>Price Zones</h2>
+          <button class="icon-button" data-close-dialog="zoneDialog" onclick="document.getElementById('zoneDialog').close()" aria-label="Close" type="button">X</button>
+        </div>
+        <div class="dialog-grid">
+          <label class="field">
+            <span>Ticker</span>
+            <input name="ticker" readonly>
+          </label>
+          <label class="field">
+            <span>Currency</span>
+            <select name="currency">
+              <option value="USD">USD</option>
+              <option value="AUD">AUD</option>
+              <option value="GBP">GBP</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Target</span>
+            <input name="targetPrice" type="number" step="0.01" min="0">
+          </label>
+          <label class="field">
+            <span>Fair Value</span>
+            <input name="fairValue" type="number" step="0.01" min="0">
+          </label>
+          <label class="field">
+            <span>Buy Low</span>
+            <input name="buyZoneLow" type="number" step="0.01" min="0">
+          </label>
+          <label class="field">
+            <span>Buy High</span>
+            <input name="buyZoneHigh" type="number" step="0.01" min="0">
+          </label>
+          <label class="field">
+            <span>Add Low</span>
+            <input name="addZoneLow" type="number" step="0.01" min="0">
+          </label>
+          <label class="field">
+            <span>Add High</span>
+            <input name="addZoneHigh" type="number" step="0.01" min="0">
+          </label>
+          <label class="field">
+            <span>Trim Price</span>
+            <input name="trimPrice" type="number" step="0.01" min="0">
+          </label>
+          <label class="field full">
+            <span>Notes</span>
+            <input name="note">
+          </label>
+        </div>
+        <menu class="dialog-actions">
+          <button class="button secondary" data-close-dialog="zoneDialog" onclick="document.getElementById('zoneDialog').close()" type="button">Cancel</button>
+          <button class="button secondary" data-action="suggestZones" type="button">Suggest</button>
+          <button class="button primary" value="default" type="submit">Save Zones</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="groupManagerDialog" class="wide-dialog">
+      <form method="dialog" class="dialog-panel" id="groupManagerForm">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Allocation groups</p>
+            <h2>Group Manager</h2>
+            <p class="muted" id="groupManagerSummary"></p>
+          </div>
+          <button class="icon-button" data-close-dialog="groupManagerDialog" onclick="document.getElementById('groupManagerDialog').close()" aria-label="Close" type="button">X</button>
+        </div>
+        <div class="group-manager-toolbar">
+          <button class="button primary" data-action="addGroupDraft" type="button">Add Group</button>
+          <span class="muted" id="groupColourWarning"></span>
+        </div>
+        <p class="form-error" id="groupManagerError" hidden></p>
+        <div id="groupManagerRows" class="group-manager-table"></div>
+        <menu class="dialog-actions">
+          <button class="button secondary" data-action="cancelGroupChanges" type="button">Cancel</button>
+          <button class="button primary" id="saveGroupChangesButton" data-action="saveGroupChanges" type="button">Save Changes</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <dialog id="rulesDialog">
+      <div class="dialog-panel rules-dialog-panel">
+        <div class="dialog-header">
+          <h2>Decision Rules Engine</h2>
+          <button class="icon-button" type="button" onclick="document.getElementById('rulesDialog').close()" aria-label="Close">X</button>
+        </div>
+        <p class="muted rules-dialog-hint">These rules drive Today’s Command, Risks, and the Cash Plan. Edit the values, or clear everything and paste a new rules block, then Save. Numbers are percentages / percentage points.</p>
+        <textarea id="rulesEditor" class="rules-editor" spellcheck="false" rows="20"></textarea>
+        <p class="rules-error" id="rulesError" hidden></p>
+        <div class="dialog-actions rules-dialog-actions">
+          <button class="button danger ghost" id="rulesResetButton" type="button">Reset to defaults</button>
+          <div class="button-row">
+            <button class="button secondary" type="button" onclick="document.getElementById('rulesDialog').close()">Cancel</button>
+            <button class="button primary" id="rulesSaveButton" type="button">Save rules</button>
+          </div>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="/app.js?v=cleanup-18" type="module"></script>
+  </body>
+</html>

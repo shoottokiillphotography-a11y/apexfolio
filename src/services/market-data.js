@@ -1,0 +1,1169 @@
+import { getDb } from "../db.js";
+import { config } from "../config.js";
+import {
+  fetchJson,
+  normalizeCurrency,
+  normalizeTicker,
+  nowIso,
+  RateLimiter,
+  roundPercent,
+  SUPPORTED_FX_CURRENCIES
+} from "../utils.js";
+
+const finnhubLimiter = new RateLimiter(config.finnhubMinIntervalMs);
+const alphaLimiter = new RateLimiter(config.alphaVantageMinIntervalMs);
+const trackedRefreshInFlight = new Map();
+
+// Yahoo throttles bursts hard (HTTP 429). Serialize every Yahoo call through one
+// limiter and retry on 429 with exponential backoff so a full refresh stays under
+// the limit instead of getting blocked and leaving fields blank. If we hit a run
+// of 429s we open a short circuit breaker so we stop hammering (which is what keeps
+// the IP throttled) and fall back to Finnhub/cache until it cools off.
+const YAHOO_MIN_INTERVAL_MS = 1000;
+const yahooLimiter = new RateLimiter(YAHOO_MIN_INTERVAL_MS);
+const YAHOO_BREAKER_THRESHOLD = 3;
+// Escalating cooldowns: if Yahoo keeps rejecting us (an IP-level rate-limit
+// penalty, common from residential / non-US connections), we back off for
+// progressively longer instead of poking every 45s - which only keeps the
+// penalty alive. Longer pauses give Yahoo's limit time to actually reset.
+const YAHOO_BREAKER_COOLDOWNS_MS = [60_000, 180_000, 600_000, 1_800_000]; // 1m, 3m, 10m, 30m
+let yahoo429Streak = 0;
+let yahooBreakerUntil = 0;
+let yahooBreakerTrips = 0; // consecutive trips without a success - escalates cooldown
+
+export function yahooBreakerState() {
+  return {
+    open: Date.now() < yahooBreakerUntil,
+    cooldownMsRemaining: Math.max(0, yahooBreakerUntil - Date.now()),
+    streak: yahoo429Streak,
+    consecutiveTrips: yahooBreakerTrips
+  };
+}
+
+async function yahooFetch(url, { retries = 4, timeoutMs = 12000, headers = {}, ignoreBreaker = false } = {}) {
+  if (!ignoreBreaker && Date.now() < yahooBreakerUntil) {
+    throw new Error("Yahoo paused (rate-limit cooldown active)");
+  }
+  // Cooldown just expired: give Yahoo a clean slate. Without this the streak
+  // stayed at its tripped value, so the very next 429 re-opened the breaker
+  // immediately and it never recovered.
+  if (yahooBreakerUntil && Date.now() >= yahooBreakerUntil) {
+    yahooBreakerUntil = 0;
+    yahoo429Streak = 0;
+  }
+  let attempt = 0;
+  for (;;) {
+    try {
+      const result = await yahooLimiter.enqueue(() => fetchJson(url, {
+        timeoutMs,
+        headers: { "User-Agent": YAHOO_UA, ...headers }
+      }));
+      // Success - Yahoo is happy again. Clear the streak AND the escalation level.
+      yahoo429Streak = 0;
+      yahooBreakerTrips = 0;
+      return result;
+    } catch (error) {
+      const message = String(error?.message || error);
+      const rateLimited = message.includes("429") || /too many requests/i.test(message);
+      if (rateLimited) {
+        yahoo429Streak += 1;
+        if (yahoo429Streak >= YAHOO_BREAKER_THRESHOLD) {
+          const idx = Math.min(yahooBreakerTrips, YAHOO_BREAKER_COOLDOWNS_MS.length - 1);
+          yahooBreakerUntil = Date.now() + YAHOO_BREAKER_COOLDOWNS_MS[idx];
+          yahooBreakerTrips += 1;
+        }
+        // Do NOT retry a rate-limited request: retrying just sends Yahoo more
+        // 429s and deepens the IP penalty. Fail now and let the breaker (with its
+        // escalating cooldown) hold us off until Yahoo's limit resets.
+        throw error;
+      }
+      // Non-rate-limit error (timeout / transient network): retry with backoff.
+      if (attempt >= retries) throw error;
+      attempt += 1;
+      const backoff = 700 * 2 ** (attempt - 1) + Math.floor(Math.random() * 350);
+      await new Promise((resolve) => setTimeout(resolve, backoff));
+    }
+  }
+}
+
+
+const YAHOO_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
+let yahooSession = null; // { cookie, crumb, fetchedAt }
+
+async function getYahooSession(force = false) {
+  if (!force && yahooSession && Date.now() - yahooSession.fetchedAt < 30 * 60 * 1000) {
+    return yahooSession;
+  }
+  let cookie = "";
+  for (const primeUrl of ["https://fc.yahoo.com/", "https://finance.yahoo.com/"]) {
+    if (cookie) break;
+    try {
+      const res = await fetch(primeUrl, {
+        headers: { "User-Agent": YAHOO_UA, "Accept": "text/html,*/*" },
+        redirect: "manual"
+      });
+      const setCookie = res.headers.get("set-cookie");
+      if (setCookie) cookie = setCookie.split(";")[0];
+      await res.text().catch(() => {});
+    } catch {
+      // ignore and try the next priming URL
+    }
+  }
+  let crumb = "";
+  for (const host of ["query2.finance.yahoo.com", "query1.finance.yahoo.com"]) {
+    if (crumb) break;
+    try {
+      const res = await fetch(`https://${host}/v1/test/getcrumb`, {
+        headers: { "User-Agent": YAHOO_UA, "Accept": "text/plain,*/*", ...(cookie ? { Cookie: cookie } : {}) }
+      });
+      const text = (await res.text()).trim();
+      if (text && text.length <= 24 && !/[<{}]/.test(text)) crumb = text;
+    } catch {
+      // ignore and try the next host
+    }
+  }
+  yahooSession = { cookie, crumb, fetchedAt: Date.now() };
+  return yahooSession;
+}
+
+function cacheFresh(priceRow) {
+  return priceRow?.as_of && Date.now() - new Date(priceRow.as_of).getTime() < config.quoteCacheSeconds * 1000;
+}
+
+function savePrice(database, quote) {
+  database.prepare(`
+    INSERT INTO market_prices (
+      ticker, price, currency, previous_close, change_amount, change_percent,
+      pre_market_price, pre_market_time, post_market_price, post_market_time,
+      regular_market_price, day_low, day_high, fifty_two_week_low,
+      fifty_two_week_high, market_cap, volume, average_volume,
+      fifty_day_average, two_hundred_day_average, market_state, exchange_name,
+      provider, status, as_of, error
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(ticker) DO UPDATE SET
+      price = excluded.price,
+      currency = excluded.currency,
+      previous_close = excluded.previous_close,
+      change_amount = excluded.change_amount,
+      change_percent = excluded.change_percent,
+      pre_market_price = COALESCE(excluded.pre_market_price, market_prices.pre_market_price),
+      pre_market_time = COALESCE(excluded.pre_market_time, market_prices.pre_market_time),
+      post_market_price = COALESCE(excluded.post_market_price, market_prices.post_market_price),
+      post_market_time = COALESCE(excluded.post_market_time, market_prices.post_market_time),
+      regular_market_price = excluded.regular_market_price,
+      day_low = excluded.day_low,
+      day_high = excluded.day_high,
+      fifty_two_week_low = COALESCE(excluded.fifty_two_week_low, market_prices.fifty_two_week_low),
+      fifty_two_week_high = COALESCE(excluded.fifty_two_week_high, market_prices.fifty_two_week_high),
+      market_cap = COALESCE(excluded.market_cap, market_prices.market_cap),
+      volume = excluded.volume,
+      average_volume = COALESCE(excluded.average_volume, market_prices.average_volume),
+      fifty_day_average = COALESCE(excluded.fifty_day_average, market_prices.fifty_day_average),
+      two_hundred_day_average = COALESCE(excluded.two_hundred_day_average, market_prices.two_hundred_day_average),
+      market_state = excluded.market_state,
+      exchange_name = COALESCE(excluded.exchange_name, market_prices.exchange_name),
+      provider = excluded.provider,
+      status = excluded.status,
+      as_of = excluded.as_of,
+      error = excluded.error
+  `).run(
+    quote.ticker,
+    quote.price,
+    quote.currency,
+    quote.previousClose,
+    quote.changeAmount,
+    quote.changePercent,
+    quote.preMarketPrice ?? null,
+    quote.preMarketTime ?? null,
+    quote.postMarketPrice ?? null,
+    quote.postMarketTime ?? null,
+    quote.regularMarketPrice ?? quote.price ?? null,
+    quote.dayLow ?? null,
+    quote.dayHigh ?? null,
+    quote.fiftyTwoWeekLow ?? null,
+    quote.fiftyTwoWeekHigh ?? null,
+    quote.marketCap ?? null,
+    quote.volume ?? null,
+    quote.averageVolume ?? null,
+    quote.fiftyDayAverage ?? null,
+    quote.twoHundredDayAverage ?? null,
+    quote.marketState ?? null,
+    quote.exchangeName ?? null,
+    quote.provider,
+    quote.status,
+    quote.asOf,
+    quote.error || null
+  );
+}
+
+function quoteFromRow(row, stale = false) {
+  if (!row) return null;
+  return {
+    ticker: row.ticker,
+    price: row.price,
+    currency: row.currency,
+    previousClose: row.previous_close,
+    changeAmount: row.change_amount,
+    changePercent: row.change_percent,
+    preMarketPrice: row.pre_market_price,
+    preMarketTime: row.pre_market_time,
+    postMarketPrice: row.post_market_price,
+    postMarketTime: row.post_market_time,
+    regularMarketPrice: row.regular_market_price,
+    dayLow: row.day_low,
+    dayHigh: row.day_high,
+    fiftyTwoWeekLow: row.fifty_two_week_low,
+    fiftyTwoWeekHigh: row.fifty_two_week_high,
+    marketCap: row.market_cap,
+    volume: row.volume,
+    averageVolume: row.average_volume,
+    fiftyDayAverage: row.fifty_day_average,
+    twoHundredDayAverage: row.two_hundred_day_average,
+    marketState: row.market_state,
+    exchangeName: row.exchange_name,
+    provider: row.provider,
+    status: row.status,
+    asOf: row.as_of,
+    error: row.error,
+    stale
+  };
+}
+
+function normalizeQuoteCurrency(input, fallback = "USD") {
+  const raw = String(input || fallback).trim();
+  const upper = raw.toUpperCase();
+  if (raw === "GBp" || upper === "GBX") return "GBP";
+  return SUPPORTED_FX_CURRENCIES.includes(upper) ? upper : normalizeCurrency(upper, fallback);
+}
+
+function yahooPriceScale(input) {
+  const raw = String(input || "").trim();
+  const upper = raw.toUpperCase();
+  return raw === "GBp" || upper === "GBX" ? 0.01 : 1;
+}
+
+function scaledPositiveNumber(value, scale = 1) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric * scale : null;
+}
+
+function scaledNumber(value, scale = 1) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric * scale : null;
+}
+
+function yahooTime(value, fallback = null) {
+  const timestamp = Number(value);
+  return Number.isFinite(timestamp) && timestamp > 0
+    ? new Date(timestamp * 1000).toISOString()
+    : fallback;
+}
+
+function yahooFirstTicker(ticker) {
+  return /\.[A-Z0-9-]+$/i.test(ticker) || /-(USD|AUD|GBP|EUR|USDT|USDC)$/i.test(ticker);
+}
+
+async function finnhubQuote(ticker, fallbackCurrency = "USD", needsProfile = false) {
+  if (!config.finnhubApiKey) throw new Error("FINNHUB_API_KEY is not configured");
+  const quoteUrl = new URL("https://finnhub.io/api/v1/quote");
+  quoteUrl.searchParams.set("symbol", ticker);
+  quoteUrl.searchParams.set("token", config.finnhubApiKey);
+  const payload = await finnhubLimiter.enqueue(() => fetchJson(quoteUrl));
+
+  let profile = {};
+  if (needsProfile) {
+    const profileUrl = new URL("https://finnhub.io/api/v1/stock/profile2");
+    profileUrl.searchParams.set("symbol", ticker);
+    profileUrl.searchParams.set("token", config.finnhubApiKey);
+    profile = await finnhubLimiter.enqueue(() => fetchJson(profileUrl));
+  }
+
+  const price = Number(payload?.c);
+  const previousClose = Number(payload?.pc);
+  if (!Number.isFinite(price) || price <= 0) {
+    return {
+      ticker,
+      price: null,
+      currency: normalizeQuoteCurrency(profile?.currency, fallbackCurrency),
+      previousClose: Number.isFinite(previousClose) ? previousClose : null,
+      changeAmount: null,
+      changePercent: null,
+      provider: "finnhub",
+      status: "DATA_GAP",
+      asOf: nowIso(),
+      error: "Finnhub returned no live price"
+    };
+  }
+
+  const finnhubNum = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) && num > 0 ? num : null;
+  };
+  return {
+    ticker,
+    price,
+    currency: normalizeQuoteCurrency(profile?.currency, fallbackCurrency),
+    previousClose: Number.isFinite(previousClose) ? previousClose : null,
+    changeAmount: Number.isFinite(previousClose) ? price - previousClose : null,
+    changePercent: Number.isFinite(previousClose) && previousClose !== 0
+      ? roundPercent(((price - previousClose) / previousClose) * 100)
+      : null,
+    dayLow: finnhubNum(payload?.l),
+    dayHigh: finnhubNum(payload?.h),
+    provider: "finnhub",
+    status: "LIVE",
+    asOf: nowIso(),
+    error: null,
+    name: profile?.name || null
+  };
+}
+
+async function alphaVantageQuote(ticker, fallbackCurrency = "USD") {
+  if (!config.alphaVantageApiKey) throw new Error("ALPHA_VANTAGE_API_KEY is not configured");
+  return alphaLimiter.enqueue(async () => {
+    const url = new URL("https://www.alphavantage.co/query");
+    url.searchParams.set("function", "GLOBAL_QUOTE");
+    url.searchParams.set("symbol", ticker);
+    url.searchParams.set("apikey", config.alphaVantageApiKey);
+    const payload = await fetchJson(url);
+    const quote = payload?.["Global Quote"] || {};
+    const price = Number(quote["05. price"]);
+    const previousClose = Number(quote["08. previous close"]);
+    if (!Number.isFinite(price) || price <= 0) {
+      return {
+        ticker,
+        price: null,
+        currency: fallbackCurrency,
+        previousClose: Number.isFinite(previousClose) ? previousClose : null,
+        changeAmount: null,
+        changePercent: null,
+        provider: "alpha_vantage",
+        status: "DATA_GAP",
+        asOf: nowIso(),
+        error: "Alpha Vantage returned no live price"
+      };
+    }
+    return {
+      ticker,
+      price,
+      currency: fallbackCurrency,
+      previousClose: Number.isFinite(previousClose) ? previousClose : null,
+      changeAmount: Number.isFinite(previousClose) ? price - previousClose : null,
+      changePercent: Number.isFinite(previousClose) && previousClose !== 0
+        ? roundPercent(((price - previousClose) / previousClose) * 100)
+        : null,
+      provider: "alpha_vantage",
+      status: "LIVE",
+      asOf: nowIso(),
+      error: null
+    };
+  });
+}
+
+function yahooQuoteFromFields(ticker, fields, fallbackCurrency = "USD", provider = "yahoo") {
+  const scale = yahooPriceScale(fields.currency);
+  const price = scaledPositiveNumber(fields.regularMarketPrice ?? fields.chartPreviousClose, scale);
+  const regularMarketPrice = scaledPositiveNumber(fields.regularMarketPrice ?? fields.chartPreviousClose, scale) ?? price;
+  const previousClose = scaledPositiveNumber(fields.regularMarketPreviousClose ?? fields.chartPreviousClose ?? fields.previousClose, scale);
+  const preMarketPrice = scaledPositiveNumber(fields.preMarketPrice, scale);
+  const postMarketPrice = scaledPositiveNumber(fields.postMarketPrice, scale);
+  const dayLow = scaledPositiveNumber(fields.regularMarketDayLow, scale);
+  const dayHigh = scaledPositiveNumber(fields.regularMarketDayHigh, scale);
+  const fiftyTwoWeekLow = scaledPositiveNumber(fields.fiftyTwoWeekLow, scale);
+  const fiftyTwoWeekHigh = scaledPositiveNumber(fields.fiftyTwoWeekHigh, scale);
+  const currency = normalizeQuoteCurrency(fields.currency, fallbackCurrency);
+  const fetchedAt = nowIso();
+
+  if (!Number.isFinite(price) || price <= 0) {
+    return {
+      ticker,
+      price: null,
+      currency,
+      previousClose,
+      changeAmount: null,
+      changePercent: null,
+      provider,
+      status: "DATA_GAP",
+      asOf: fetchedAt,
+      error: "Yahoo Finance returned no regular-market close"
+    };
+  }
+
+  return {
+    ticker,
+    price,
+    currency,
+    previousClose,
+    changeAmount: Number.isFinite(previousClose) ? price - previousClose : null,
+    changePercent: Number.isFinite(previousClose) && previousClose !== 0
+      ? roundPercent(((price - previousClose) / previousClose) * 100)
+      : null,
+    preMarketPrice,
+    preMarketTime: preMarketPrice != null ? yahooTime(fields.preMarketTime, fetchedAt) : null,
+    postMarketPrice,
+    postMarketTime: postMarketPrice != null ? yahooTime(fields.postMarketTime, fetchedAt) : null,
+    regularMarketPrice,
+    dayLow,
+    dayHigh,
+    fiftyTwoWeekLow,
+    fiftyTwoWeekHigh,
+    marketCap: scaledNumber(fields.marketCap),
+    volume: scaledNumber(fields.regularMarketVolume),
+    averageVolume: scaledNumber(fields.averageDailyVolume3Month ?? fields.averageVolume),
+    fiftyDayAverage: scaledPositiveNumber(fields.fiftyDayAverage, scale),
+    twoHundredDayAverage: scaledPositiveNumber(fields.twoHundredDayAverage, scale),
+    marketState: fields.marketState || null,
+    exchangeName: fields.fullExchangeName || fields.exchange || null,
+    provider,
+    status: "LIVE",
+    asOf: yahooTime(fields.regularMarketTime, fetchedAt),
+    error: null,
+    name: fields.shortName || fields.longName || fields.displayName || null
+  };
+}
+
+// Fetch many tickers in a SINGLE Yahoo v7 request. The endpoint's `symbols`
+// param accepts a comma-separated list, so this replaces one-request-per-ticker
+// polling (~34 requests every refresh, which is what trips Yahoo's rate limit)
+// with ~2 batched requests. The batched response carries the full record for
+// each symbol - including pre/after-market price + time - so no per-ticker
+// follow-up calls are needed. Returns a Map of normalised symbol -> quote
+// (LIVE quotes only). Chunks that fail (e.g. breaker open) are skipped so those
+// tickers fall back to the per-ticker provider chain.
+async function yahooBatchQuotes(tickers, chunkSize = 50) {
+  const out = new Map();
+  const unique = [...new Set((tickers || []).map((t) => normalizeTicker(t)).filter(Boolean))];
+  if (!unique.length) return out;
+  const buildUrl = (symbols, crumb) => {
+    const url = new URL("https://query1.finance.yahoo.com/v7/finance/quote");
+    url.searchParams.set("symbols", symbols.join(","));
+    // No `fields` filter - the crumb'd v7 endpoint returns a partial record when
+    // filtered, so request the full quote object.
+    if (crumb) url.searchParams.set("crumb", crumb);
+    return url;
+  };
+  const requestWith = async (symbols, session) => {
+    const headers = { "Accept": "application/json" };
+    if (session.cookie) headers.Cookie = session.cookie;
+    return yahooFetch(buildUrl(symbols, session.crumb), { timeoutMs: 15000, headers });
+  };
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    let payload = null;
+    try {
+      try {
+        payload = await requestWith(chunk, await getYahooSession());
+      } catch {
+        // Crumb/cookie may be stale - refresh once and retry this chunk.
+        payload = await requestWith(chunk, await getYahooSession(true));
+      }
+    } catch {
+      payload = null; // chunk failed (breaker open / throttled) - tickers fall back
+    }
+    const results = payload?.quoteResponse?.result || [];
+    for (const item of results) {
+      const symbol = normalizeTicker(item?.symbol || "");
+      if (!symbol) continue;
+      const quote = yahooQuoteFromFields(symbol, item, exchangeCurrencyGuess(symbol) || "USD", "yahoo");
+      if (quote && quote.status === "LIVE") out.set(symbol, quote);
+    }
+  }
+  return out;
+}
+
+async function yahooQuoteEndpoint(ticker, fallbackCurrency = "USD") {
+  const buildUrl = (crumb) => {
+    const url = new URL("https://query1.finance.yahoo.com/v7/finance/quote");
+    url.searchParams.set("symbols", ticker);
+    // No `fields` filter: the crumb'd v7 endpoint returns a partial record when
+    // filtered, so request the full quote object (price, pre/post, day range,
+    // 52-week, volume, avg volume, market cap, 50/200-day averages, state).
+    if (crumb) url.searchParams.set("crumb", crumb);
+    return url;
+  };
+  const requestWith = async (session) => {
+    const headers = { "Accept": "application/json" };
+    if (session.cookie) headers.Cookie = session.cookie;
+    return yahooFetch(buildUrl(session.crumb), { timeoutMs: 12000, headers });
+  };
+  let payload;
+  try {
+    payload = await requestWith(await getYahooSession());
+  } catch {
+    // Crumb/cookie may be stale or missing - refresh once and retry.
+    payload = await requestWith(await getYahooSession(true));
+  }
+  const quote = payload?.quoteResponse?.result?.[0];
+  if (!quote) throw new Error("Yahoo quote endpoint returned no quote");
+  return yahooQuoteFromFields(ticker, quote, fallbackCurrency, "yahoo");
+}
+
+async function yahooChartQuote(ticker, fallbackCurrency = "USD") {
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}`);
+  // 2 days is enough for the current/overnight pre/post price and keeps the
+  // response small (US tickers carry pre+regular+post bars, so 5d was ~3x heavier
+  // and more prone to timing out under throttling). Day range / 52-week / volume
+  // come from meta and don't depend on the range.
+  url.searchParams.set("range", "2d");
+  url.searchParams.set("interval", "5m");
+  url.searchParams.set("includePrePost", "true");
+  const payload = await yahooFetch(url, { timeoutMs: 12000 });
+  const result = payload?.chart?.result?.[0];
+  const meta = { ...(result?.meta || {}) };
+  // The chart endpoint doesn't expose marketState or pre/post prices directly,
+  // so derive them from the intraday series and the current trading periods.
+  const periods = meta.currentTradingPeriod || {};
+  const timestamps = result?.timestamp || [];
+  const closes = result?.indicators?.quote?.[0]?.close || [];
+  const lastCloseInWindow = (start, end) => {
+    if (start == null || end == null) return null;
+    let found = null;
+    for (let i = 0; i < timestamps.length; i += 1) {
+      const t = timestamps[i];
+      if (t >= start && t < end && closes[i] != null) found = { price: closes[i], time: t };
+    }
+    return found;
+  };
+  if (meta.preMarketPrice == null && periods.pre) {
+    const pre = lastCloseInWindow(periods.pre.start, periods.pre.end);
+    if (pre) { meta.preMarketPrice = pre.price; meta.preMarketTime = pre.time; }
+  }
+  if (meta.postMarketPrice == null) {
+    // Find the end of the most recent regular session, then take the last bar
+    // after it (the current/overnight after-hours price). Prefer today's regular
+    // close; fall back to the trading-periods history for the overnight dead zone.
+    // NOTE: meta.tradingPeriods can be an ARRAY of arrays OR an OBJECT
+    // ({pre,regular,post}) when includePrePost is set - handle both so this never
+    // throws and silently kills the whole chart fetch.
+    let regularEnd = periods.regular?.end ?? null;
+    if (regularEnd == null) {
+      const raw = meta.tradingPeriods;
+      const arr = Array.isArray(raw)
+        ? raw
+        : (raw && Array.isArray(raw.regular) ? raw.regular : []);
+      const flat = arr
+        .map((p) => (Array.isArray(p) ? p[p.length - 1] : p))
+        .filter((p) => p && p.end != null);
+      if (flat.length) regularEnd = flat[flat.length - 1].end;
+    }
+    if (regularEnd != null) {
+      let post = null;
+      for (let i = 0; i < timestamps.length; i += 1) {
+        const t = timestamps[i];
+        if (closes[i] == null) continue;
+        if (t >= regularEnd) post = { price: closes[i], time: t };
+      }
+      if (post) { meta.postMarketPrice = post.price; meta.postMarketTime = post.time; }
+    }
+  }
+  if (!meta.marketState) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (periods.regular && nowSec >= periods.regular.start && nowSec < periods.regular.end) meta.marketState = "REGULAR";
+    else if (periods.pre && nowSec >= periods.pre.start && nowSec < periods.pre.end) meta.marketState = "PRE";
+    else if (periods.post && nowSec >= periods.post.start && nowSec < periods.post.end) meta.marketState = "POST";
+    else meta.marketState = "CLOSED";
+  }
+  return yahooQuoteFromFields(ticker, meta, fallbackCurrency, "yahoo");
+}
+
+export async function debugQuoteSources(ticker) {
+  const t = normalizeTicker(ticker);
+  const keys = ["price", "changeAmount", "changePercent", "preMarketPrice", "postMarketPrice",
+    "dayLow", "dayHigh", "volume", "averageVolume", "fiftyTwoWeekLow", "fiftyTwoWeekHigh",
+    "marketCap", "fiftyDayAverage", "twoHundredDayAverage"];
+  const summarize = (q) => q
+    ? { status: q.status, provider: q.provider, marketState: q.marketState,
+        fields: Object.fromEntries(keys.map((k) => [k, q[k] ?? null])) }
+    : null;
+  let v7 = null; let chart = null; let v7err = null; let charterr = null;
+  try { v7 = await yahooQuoteEndpoint(t); } catch (e) { v7err = String(e?.message || e); }
+  try { chart = await yahooChartQuote(t); } catch (e) { charterr = String(e?.message || e); }
+  return {
+    ticker: t,
+    session: { hasCookie: Boolean(yahooSession?.cookie), hasCrumb: Boolean(yahooSession?.crumb) },
+    v7: summarize(v7), v7err,
+    chart: summarize(chart), charterr
+  };
+}
+
+function mergeQuotes(primary, secondary) {
+  if (!primary) return secondary;
+  if (!secondary) return primary;
+  const merged = { ...secondary };
+  for (const [key, value] of Object.entries(primary)) {
+    if (value != null) merged[key] = value;
+  }
+  return merged;
+}
+
+// The v10 quoteSummary endpoint returns the FULL record (day range, 52-week,
+// volume, moving averages, pre/post prices, market cap, market state) in one small
+// request, using the same crumb auth that already works for v7. The v8 chart call
+// is large and has been failing for US tickers, so try quoteSummary first.
+async function yahooQuoteSummary(ticker, fallbackCurrency = "USD") {
+  const session = await getYahooSession();
+  const url = new URL(`https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}`);
+  url.searchParams.set("modules", "price,summaryDetail");
+  if (session.crumb) url.searchParams.set("crumb", session.crumb);
+  const headers = { "Accept": "application/json" };
+  if (session.cookie) headers.Cookie = session.cookie;
+  const payload = await yahooFetch(url, { timeoutMs: 10000, headers });
+  const result = payload?.quoteSummary?.result?.[0];
+  if (!result) return null;
+  const price = result.price || {};
+  const detail = result.summaryDetail || {};
+  const raw = (v) => (v && typeof v === "object" ? (v.raw ?? null) : (v ?? null));
+  const fields = {
+    regularMarketPrice: raw(price.regularMarketPrice),
+    regularMarketPreviousClose: raw(price.regularMarketPreviousClose),
+    regularMarketDayHigh: raw(price.regularMarketDayHigh),
+    regularMarketDayLow: raw(price.regularMarketDayLow),
+    regularMarketVolume: raw(price.regularMarketVolume),
+    regularMarketTime: raw(price.regularMarketTime),
+    preMarketPrice: raw(price.preMarketPrice),
+    preMarketTime: raw(price.preMarketTime),
+    postMarketPrice: raw(price.postMarketPrice),
+    postMarketTime: raw(price.postMarketTime),
+    marketCap: raw(price.marketCap),
+    marketState: price.marketState || null,
+    currency: price.currency || fallbackCurrency,
+    fullExchangeName: price.exchangeName || null,
+    shortName: price.shortName || price.longName || null,
+    fiftyTwoWeekHigh: raw(detail.fiftyTwoWeekHigh),
+    fiftyTwoWeekLow: raw(detail.fiftyTwoWeekLow),
+    fiftyDayAverage: raw(detail.fiftyDayAverage),
+    twoHundredDayAverage: raw(detail.twoHundredDayAverage),
+    averageVolume: raw(detail.averageVolume ?? detail.averageDailyVolume3Month)
+  };
+  return yahooQuoteFromFields(ticker, fields, fallbackCurrency, "yahoo");
+}
+
+async function yahooFinanceQuote(ticker, fallbackCurrency = "USD") {
+  let endpointQuote = null;
+  try {
+    endpointQuote = await yahooQuoteEndpoint(ticker, fallbackCurrency);
+  } catch {
+    endpointQuote = null;
+  }
+  const endpointLive = endpointQuote && endpointQuote.status === "LIVE";
+  // International tickers (.AX, .L, etc.) have no extended-hours session and no
+  // Finnhub fallback. Spending 2-3 Yahoo calls each just to enrich them is what
+  // tripped the rate-limit breaker - which then froze exactly those tickers.
+  // So for international names, take the v7 price and stop; only reach for the
+  // heavier endpoints if v7 itself failed.
+  const isInternational = ticker.includes(".");
+  const inExtendedHours = endpointQuote
+    && ["PRE", "POST", "PREPRE", "POSTPOST"].includes(String(endpointQuote.marketState || "").toUpperCase());
+  const needsMore = !endpointLive
+    || (!isInternational && (
+        endpointQuote.dayLow == null
+        || endpointQuote.dayHigh == null
+        || endpointQuote.volume == null
+        || endpointQuote.fiftyTwoWeekLow == null
+        || (inExtendedHours && endpointQuote.preMarketPrice == null && endpointQuote.postMarketPrice == null)
+      ));
+
+  // Prefer quoteSummary (small, full record). Fall back to the heavy chart only if
+  // quoteSummary also fails.
+  let richQuote = null;
+  if (needsMore) {
+    try {
+      richQuote = await yahooQuoteSummary(ticker, fallbackCurrency);
+    } catch {
+      richQuote = null;
+    }
+    if (!richQuote || richQuote.status !== "LIVE") {
+      try {
+        richQuote = await yahooChartQuote(ticker, fallbackCurrency);
+      } catch {
+        richQuote = null;
+      }
+    }
+  }
+  const richLive = richQuote && richQuote.status === "LIVE";
+  // Merge so the full record (day range / 52w / pre/post / MAs) is kept while the
+  // v7 quote supplies a reliable live price + market state.
+  if (endpointLive && richLive) return mergeQuotes(endpointQuote, richQuote);
+  if (endpointLive) return endpointQuote;
+  if (richLive) return richQuote;
+  return endpointQuote || richQuote;
+}
+
+function exchangeCurrencyGuess(symbol) {
+  const s = String(symbol || "").toUpperCase();
+  if (s.endsWith(".AX")) return "AUD";
+  if (s.endsWith(".L")) return "GBP";
+  if (s.endsWith(".DE") || s.endsWith(".PA") || s.endsWith(".AS") || s.endsWith(".MI")
+    || s.endsWith(".MC") || s.endsWith(".BR") || s.endsWith(".LS") || s.endsWith(".VI")
+    || s.endsWith(".HE") || s.endsWith(".IR")) return "EUR";
+  if (s.endsWith(".CO")) return "DKK";
+  if (s.endsWith(".ST")) return "SEK";
+  if (s.endsWith(".OL")) return "NOK";
+  if (s.endsWith(".SW")) return "CHF";
+  if (s.endsWith(".HK")) return "HKD";
+  if (s.endsWith(".TO") || s.endsWith(".V")) return "CAD";
+  if (s.endsWith(".T")) return "JPY";
+  if (s.endsWith(".NS") || s.endsWith(".BO")) return "INR";
+  return "USD";
+}
+
+// Interactive search must NOT queue behind the bulk-refresh limiter (35+ holdings
+// spaced 550ms apart = ~19s), or it times out before it runs. Give it a small
+// dedicated lane and the Yahoo session cookie (Yahoo increasingly gates search).
+const yahooSearchLimiter = new RateLimiter(250);
+
+async function yahooSearchSymbols(q) {
+  const url = new URL("https://query1.finance.yahoo.com/v1/finance/search");
+  url.searchParams.set("q", q);
+  url.searchParams.set("quotesCount", "10");
+  url.searchParams.set("newsCount", "0");
+  url.searchParams.set("listsCount", "0");
+  url.searchParams.set("enableFuzzyQuery", "true");
+  let payload;
+  try {
+    const session = await getYahooSession().catch(() => null);
+    const headers = {
+      "User-Agent": YAHOO_UA,
+      "Accept": "application/json",
+      ...(session?.cookie ? { Cookie: session.cookie } : {})
+    };
+    payload = await yahooSearchLimiter.enqueue(() => fetchJson(url, { timeoutMs: 8000, headers }));
+  } catch {
+    return [];
+  }
+  const quotes = Array.isArray(payload?.quotes) ? payload.quotes : [];
+  const allowed = new Set(["EQUITY", "ETF", "INDEX", "CRYPTOCURRENCY", "CURRENCY", "MUTUALFUND"]);
+  return quotes
+    .filter((item) => item.symbol && allowed.has(item.quoteType))
+    .map((item) => ({
+      symbol: item.symbol,
+      name: item.longname || item.shortname || item.symbol,
+      exchange: item.exchDisp || item.exchange || "",
+      type: item.quoteType || "",
+      currency: exchangeCurrencyGuess(item.symbol)
+    }))
+    .slice(0, 10);
+}
+
+async function finnhubSearchSymbols(q) {
+  if (!config.finnhubApiKey) return [];
+  const url = new URL("https://finnhub.io/api/v1/search");
+  url.searchParams.set("q", q);
+  url.searchParams.set("token", config.finnhubApiKey);
+  let payload;
+  try {
+    payload = await finnhubLimiter.enqueue(() => fetchJson(url, { timeoutMs: 9000 }));
+  } catch {
+    return [];
+  }
+  const result = Array.isArray(payload?.result) ? payload.result : [];
+  return result
+    .filter((item) => Boolean(item.symbol))
+    .filter((item) => /stock|common|etf|adr/i.test(item.type || "Common Stock"))
+    .map((item) => ({
+      symbol: item.symbol,
+      name: item.description || item.symbol,
+      exchange: item.type || "",
+      type: item.type || "",
+      currency: exchangeCurrencyGuess(item.symbol)
+    }))
+    .slice(0, 10);
+}
+
+const COMMON_NAME_TICKERS = {
+  "oracle": "ORCL", "apple": "AAPL", "microsoft": "MSFT", "amazon": "AMZN",
+  "google": "GOOGL", "alphabet": "GOOGL", "meta": "META", "facebook": "META",
+  "nvidia": "NVDA", "tesla": "TSLA", "netflix": "NFLX", "micron": "MU",
+  "broadcom": "AVGO", "amd": "AMD", "intel": "INTC", "salesforce": "CRM",
+  "adobe": "ADBE", "paypal": "PYPL", "disney": "DIS", "boeing": "BA",
+  "visa": "V", "mastercard": "MA", "walmart": "WMT", "pepsi": "PEP",
+  "nike": "NKE", "starbucks": "SBUX", "uber": "UBER", "airbnb": "ABNB",
+  "palantir": "PLTR", "snowflake": "SNOW", "shopify": "SHOP", "spotify": "SPOT",
+  "qualcomm": "QCOM", "cisco": "CSCO", "ibm": "IBM", "cme group": "CME",
+  "coinbase": "COIN", "block": "SQ", "robinhood": "HOOD", "datadog": "DDOG",
+  "crowdstrike": "CRWD", "servicenow": "NOW", "arista": "ANET", "supermicro": "SMCI",
+  "vertiv": "VRT", "western digital": "WDC", "ge vernova": "GEV", "ionq": "IONQ",
+  "alibaba": "BABA", "eli lilly": "LLY", "bitcoin": "BTC-USD",
+  "novo nordisk": "NOVO-B.CO", "novo": "NOVO-B.CO", "arm": "ARM.L", "arm holdings": "ARM.L",
+  "metcash": "MTO.AX", "wise": "WISE.L",
+  "light and wonder": "LNW", "light & wonder": "LNW"
+};
+
+function curatedSymbolMatch(q) {
+  const key = q.trim().toLowerCase();
+  if (!key) return [];
+  const titleCase = (s) => s.replace(/\b\w/g, (c) => c.toUpperCase());
+  const seen = new Set();
+  const out = [];
+  for (const [name, sym] of Object.entries(COMMON_NAME_TICKERS)) {
+    if ((name.startsWith(key) || sym.toLowerCase().startsWith(key)) && !seen.has(sym)) {
+      seen.add(sym);
+      out.push({ symbol: sym, name: titleCase(name), exchange: "", type: "EQUITY", currency: exchangeCurrencyGuess(sym) });
+    }
+  }
+  return out.slice(0, 10);
+}
+
+export async function searchSymbols(query) {
+  const q = String(query || "").trim();
+  if (q.length < 1) return [];
+  const yahoo = await yahooSearchSymbols(q);
+  if (yahoo.length) return yahoo;
+  // Yahoo throttled or empty - fall back to Finnhub, then a small curated list of
+  // common names so the basics always resolve.
+  const finnhub = await finnhubSearchSymbols(q);
+  if (finnhub.length) return finnhub;
+  return curatedSymbolMatch(q);
+}
+
+// If the user typed a clean uppercase ticker, keep it. If they typed a company
+// name or a casual lowercase/mixed string, resolve it to a real symbol so we never
+// create a blank watchlist entry like "ORACLE".
+export async function resolveTickerInput(rawInput) {
+  const raw = String(rawInput || "").trim();
+  if (!raw) return raw;
+  const looksLikeName = /\s/.test(raw) || /[a-z]/.test(raw);
+  if (!looksLikeName) return raw.toUpperCase();
+  try {
+    const matches = await searchSymbols(raw);
+    const upper = raw.toUpperCase();
+    const exact = matches.find((m) => m.symbol.toUpperCase() === upper);
+    if (exact) return exact.symbol;
+    if (matches.length) return matches[0].symbol;
+  } catch {
+    // fall through to the raw value
+  }
+  return raw.toUpperCase();
+}
+
+// Verifies the batched fetch: resets the breaker, runs ONE batched Yahoo call
+// for all tracked tickers, and reports how many resolved and how many carry a
+// pre/after-market price. Used by /api/diag/batch to confirm the fix is working.
+export async function diagnoseBatch(scope = "all") {
+  resetYahooBreaker();
+  const tickers = trackedTickers(getDb(), scope);
+  let batch = new Map();
+  let error = null;
+  try {
+    batch = await yahooBatchQuotes(tickers);
+  } catch (err) {
+    error = String(err?.message || err);
+  }
+  const resolved = [];
+  const missing = [];
+  let withPre = 0;
+  let withPost = 0;
+  for (const ticker of tickers) {
+    const q = batch.get(normalizeTicker(ticker));
+    if (q && q.status === "LIVE") {
+      if (q.preMarketPrice != null) withPre++;
+      if (q.postMarketPrice != null) withPost++;
+      resolved.push({
+        ticker,
+        price: q.price,
+        marketState: q.marketState,
+        preMarketPrice: q.preMarketPrice ?? null,
+        postMarketPrice: q.postMarketPrice ?? null
+      });
+    } else {
+      missing.push(ticker);
+    }
+  }
+  return {
+    scope,
+    requested: tickers.length,
+    resolved: resolved.length,
+    missing,
+    withPreMarketPrice: withPre,
+    withPostMarketPrice: withPost,
+    breaker: yahooBreakerState(),
+    error,
+    quotes: resolved
+  };
+}
+
+export async function diagnoseQuote(tickerInput, { reset = false } = {}) {
+  const ticker = normalizeTicker(tickerInput);
+  if (reset) resetYahooBreaker();
+  const session = await getYahooSession();
+  const fieldList = [
+    "price", "regularMarketPrice", "preMarketPrice", "postMarketPrice", "marketState",
+    "dayLow", "dayHigh", "fiftyTwoWeekLow", "fiftyTwoWeekHigh", "volume",
+    "averageVolume", "marketCap", "fiftyDayAverage", "twoHundredDayAverage"
+  ];
+  const summarize = (quote) => {
+    if (!quote) return null;
+    const out = { status: quote.status, provider: quote.provider, asOf: quote.asOf ?? null, error: quote.error ?? null };
+    for (const field of fieldList) out[field] = quote[field] ?? null;
+    return out;
+  };
+  const result = {
+    ticker,
+    crumbObtained: Boolean(session.crumb),
+    cookieObtained: Boolean(session.cookie),
+    breaker: yahooBreakerState()
+  };
+  try {
+    result.v7 = summarize(await yahooQuoteEndpoint(ticker, "USD"));
+  } catch (error) {
+    result.v7Error = String(error?.message || error);
+  }
+  try {
+    result.quoteSummary = summarize(await yahooQuoteSummary(ticker, "USD"));
+  } catch (error) {
+    result.quoteSummaryError = String(error?.message || error);
+  }
+  try {
+    result.chart = summarize(await yahooChartQuote(ticker, "USD"));
+  } catch (error) {
+    result.chartError = String(error?.message || error);
+  }
+  return result;
+}
+
+// When Yahoo's chart endpoint is throttled, a v7-only quote comes back "LIVE" but
+// missing day range / 52-week. Finnhub (which the app already reaches for market
+// caps) can fill those gaps so the Market Data view isn't blank for US tickers.
+const finnhubMetricCache = new Map();
+const FINNHUB_METRIC_TTL_MS = 6 * 60 * 60 * 1000;
+
+async function finnhubDayRange(ticker) {
+  if (!config.finnhubApiKey) return null;
+  const url = new URL("https://finnhub.io/api/v1/quote");
+  url.searchParams.set("symbol", ticker);
+  url.searchParams.set("token", config.finnhubApiKey);
+  try {
+    const payload = await finnhubLimiter.enqueue(() => fetchJson(url));
+    const low = Number(payload?.l);
+    const high = Number(payload?.h);
+    return {
+      dayLow: Number.isFinite(low) && low > 0 ? low : null,
+      dayHigh: Number.isFinite(high) && high > 0 ? high : null
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function finnhubFiftyTwoWeek(ticker) {
+  if (!config.finnhubApiKey) return null;
+  const cached = finnhubMetricCache.get(ticker);
+  if (cached && Date.now() - cached.at < FINNHUB_METRIC_TTL_MS) return cached;
+  const url = new URL("https://finnhub.io/api/v1/stock/metric");
+  url.searchParams.set("symbol", ticker);
+  url.searchParams.set("metric", "all");
+  url.searchParams.set("token", config.finnhubApiKey);
+  try {
+    const payload = await finnhubLimiter.enqueue(() => fetchJson(url));
+    const metric = payload?.metric || {};
+    const high = Number(metric["52WeekHigh"]);
+    const low = Number(metric["52WeekLow"]);
+    const entry = {
+      at: Date.now(),
+      fiftyTwoWeekLow: Number.isFinite(low) && low > 0 ? low : null,
+      fiftyTwoWeekHigh: Number.isFinite(high) && high > 0 ? high : null
+    };
+    finnhubMetricCache.set(ticker, entry);
+    return entry;
+  } catch {
+    return null;
+  }
+}
+
+async function enrichQuoteFromFinnhub(quote) {
+  if (!quote || quote.status !== "LIVE" || !config.finnhubApiKey) return quote;
+  const needDayRange = quote.dayLow == null || quote.dayHigh == null;
+  const needFiftyTwo = quote.fiftyTwoWeekLow == null || quote.fiftyTwoWeekHigh == null;
+  if (!needDayRange && !needFiftyTwo) return quote;
+  if (needDayRange) {
+    const range = await finnhubDayRange(quote.ticker);
+    if (range) {
+      if (quote.dayLow == null) quote.dayLow = range.dayLow;
+      if (quote.dayHigh == null) quote.dayHigh = range.dayHigh;
+    }
+  }
+  if (needFiftyTwo) {
+    const window = await finnhubFiftyTwoWeek(quote.ticker);
+    if (window) {
+      if (quote.fiftyTwoWeekLow == null) quote.fiftyTwoWeekLow = window.fiftyTwoWeekLow;
+      if (quote.fiftyTwoWeekHigh == null) quote.fiftyTwoWeekHigh = window.fiftyTwoWeekHigh;
+    }
+  }
+  return quote;
+}
+
+export async function getQuote(tickerInput, { force = false } = {}) {
+  const ticker = normalizeTicker(tickerInput);
+  const database = getDb();
+  const cached = database.prepare("SELECT * FROM market_prices WHERE ticker = ?").get(ticker);
+  if (!force && cacheFresh(cached)) return quoteFromRow(cached, false);
+
+  const equity = database.prepare("SELECT * FROM equities WHERE ticker = ?").get(ticker);
+  const fallbackCurrency = normalizeCurrency(equity?.currency, "USD");
+  const needsProfile = !equity?.name || !equity?.currency;
+
+  const providers = yahooFirstTicker(ticker)
+    ? [yahooFinanceQuote, finnhubQuote, alphaVantageQuote]
+    : [yahooFinanceQuote, finnhubQuote, alphaVantageQuote];
+  let lastError = null;
+  let bestUnavailableQuote = null;
+  for (const provider of providers) {
+    try {
+      const quote = await provider(ticker, fallbackCurrency, needsProfile);
+      if (quote.status !== "LIVE") {
+        bestUnavailableQuote ||= quote;
+        continue;
+      }
+      await enrichQuoteFromFinnhub(quote);
+      savePrice(database, quote);
+      if (quote.name || quote.currency) {
+        database.prepare("UPDATE equities SET name = COALESCE(name, ?), currency = ?, updated_at = ? WHERE ticker = ?")
+          .run(quote.name, quote.currency, nowIso(), ticker);
+      }
+      return quote;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const fallback = quoteFromRow(cached, true);
+  if (fallback?.status === "LIVE") return { ...fallback, error: lastError?.message || fallback.error };
+  if (bestUnavailableQuote) {
+    const quote = {
+      ...bestUnavailableQuote,
+      error: lastError?.message || bestUnavailableQuote.error
+    };
+    savePrice(database, quote);
+    return quote;
+  }
+  if (fallback) return { ...fallback, error: lastError?.message || fallback.error };
+
+  const emptyQuote = {
+    ticker,
+    price: null,
+    currency: fallbackCurrency,
+    previousClose: null,
+    changeAmount: null,
+    changePercent: null,
+    provider: "none",
+    status: "UNAVAILABLE",
+    asOf: nowIso(),
+    error: lastError?.message || "No market data provider is configured"
+  };
+  savePrice(database, emptyQuote);
+  return emptyQuote;
+}
+
+export function trackedTickers(database = getDb(), scope = "all") {
+  const held = "SELECT ticker FROM holding_lots WHERE quantity > 0";
+  const pulse = "SELECT symbol AS ticker FROM market_pulse_items WHERE active = 1";
+  const alerts = "SELECT ticker FROM price_alerts WHERE active = 1";
+  const watch = "SELECT ticker FROM watchlist_items";
+
+  if (scope === "fast") {
+    // Holdings + dashboard Market Pulse: refreshed most often.
+    return database.prepare(`SELECT DISTINCT ticker FROM (${held} UNION ${pulse}) ORDER BY ticker`)
+      .all().map((row) => row.ticker);
+  }
+  if (scope === "alerts") {
+    // Active alert tickers not already covered by the fast set - need fresh-ish
+    // prices so alerts fire, but not every minute.
+    return database.prepare(`
+      SELECT DISTINCT ticker FROM (${alerts})
+      WHERE ticker NOT IN (${held} UNION ${pulse})
+      ORDER BY ticker
+    `).all().map((row) => row.ticker);
+  }
+  if (scope === "watchlist") {
+    // Watch-only names: refreshed least often.
+    return database.prepare(`
+      SELECT DISTINCT ticker FROM watchlist_items
+      WHERE ticker NOT IN (${held} UNION ${pulse} UNION ${alerts})
+      ORDER BY ticker
+    `).all().map((row) => row.ticker);
+  }
+  if (scope === "intl") {
+    // International tickers only (.AX/.L/.CO etc.) - Yahoo-only, no fallback.
+    // Used by the on-demand "Refresh International" button so we can fetch just
+    // these few names with a freshly-cleared breaker.
+    return database.prepare(`
+      SELECT DISTINCT ticker FROM (${held} UNION ${pulse} UNION ${alerts} UNION ${watch})
+      WHERE ticker LIKE '%.%'
+      ORDER BY ticker
+    `).all().map((row) => row.ticker);
+  }
+  return database.prepare(`
+    SELECT DISTINCT ticker FROM (${held} UNION ${pulse} UNION ${alerts} UNION ${watch})
+    ORDER BY ticker
+  `).all().map((row) => row.ticker);
+}
+
+export function resetYahooBreaker() {
+  yahooBreakerUntil = 0;
+  yahoo429Streak = 0;
+  yahooBreakerTrips = 0;
+}
+
+export async function refreshTrackedQuotes({ force = true, scope = "all", resetBreaker = false } = {}) {
+  if (trackedRefreshInFlight.has(scope)) return trackedRefreshInFlight.get(scope);
+  const run = (async () => {
+    // A manual refresh clears any stuck rate-limit cooldown so the user gets a
+    // fresh attempt on demand (this is the "Refresh Prices" button behaviour).
+    if (resetBreaker) resetYahooBreaker();
+    let tickers = trackedTickers(getDb(), scope);
+    if (resetBreaker) {
+      // International tickers (.AX/.L/.CO) are Yahoo-only with no fallback, so fetch
+      // them FIRST while the breaker is freshly cleared - otherwise the larger US
+      // batch can re-trip the limiter before we ever reach them.
+      const intl = tickers.filter((t) => t.includes("."));
+      const rest = tickers.filter((t) => !t.includes("."));
+      tickers = [...intl, ...rest];
+    }
+    const db = getDb();
+    // ONE batched Yahoo call for every ticker (instead of one call each). This
+    // keeps Yahoo load tiny - so the rate-limit breaker stops tripping - and the
+    // batched response includes pre/after-market prices for all US tickers.
+    let batch = new Map();
+    try {
+      batch = await yahooBatchQuotes(tickers);
+    } catch {
+      batch = new Map();
+    }
+    const results = [];
+    for (const ticker of tickers) {
+      const batched = batch.get(normalizeTicker(ticker));
+      if (batched && batched.status === "LIVE") {
+        try {
+          savePrice(db, batched);
+          if (batched.name || batched.currency) {
+            db.prepare("UPDATE equities SET name = COALESCE(name, ?), currency = ?, updated_at = ? WHERE ticker = ?")
+              .run(batched.name, batched.currency, nowIso(), ticker);
+          }
+          results.push(batched);
+          continue;
+        } catch {
+          // Save failed for this row - fall through to the per-ticker path below.
+        }
+      }
+      // Not covered by the batch (Yahoo throttled, unknown symbol, or save error):
+      // use the full provider chain (Yahoo per-ticker -> Finnhub -> Alpha Vantage).
+      results.push(await getQuote(ticker, { force }));
+    }
+    return results;
+  })();
+  trackedRefreshInFlight.set(scope, run);
+  try {
+    return await run;
+  } finally {
+    trackedRefreshInFlight.delete(scope);
+  }
+}
+
+export function marketProviderStatus() {
+  return {
+    finnhubConfigured: Boolean(config.finnhubApiKey),
+    alphaVantageConfigured: Boolean(config.alphaVantageApiKey),
+    quoteCacheSeconds: config.quoteCacheSeconds
+  };
+}
