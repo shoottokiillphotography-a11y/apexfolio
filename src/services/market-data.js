@@ -1091,13 +1091,14 @@ export async function getQuote(tickerInput, { force = false } = {}) {
     : normalizeCurrency(equity?.currency, "USD");
   const needsProfile = !equity?.name || !equity?.currency;
 
-  // International tickers: the v8 chart endpoint ONLY (no v7, no crumb, no cookie),
-  // on the isolated chart breaker. Finnhub's free tier doesn't cover these exchanges,
-  // so Alpha Vantage is the only (best-effort) non-Yahoo fallback. US/crypto keep the
-  // full v7 -> Finnhub -> Alpha Vantage chain.
+  // International tickers use Yahoo first because Finnhub's free tier generally
+  // does not cover these exchanges. The lightweight chart path is cheapest, but
+  // some symbols/IPs intermittently fail there; fall back to the older Yahoo quote
+  // path that previously resolved .AX/.L/.CO names before trying optional providers.
   const providers = isInternational
-    ? [yahooChartQuoteLight, alphaVantageQuote]
-    : [yahooFinanceQuote, finnhubQuote, alphaVantageQuote];
+    ? [yahooChartQuoteLight, yahooFinanceQuote]
+    : [yahooFinanceQuote, finnhubQuote];
+  if (config.alphaVantageApiKey) providers.push(alphaVantageQuote);
   let lastError = null;
   let bestUnavailableQuote = null;
   for (const provider of providers) {
