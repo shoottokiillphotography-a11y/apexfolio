@@ -14,42 +14,70 @@ const finnhubLimiter = new RateLimiter(config.finnhubMinIntervalMs);
 const alphaLimiter = new RateLimiter(config.alphaVantageMinIntervalMs);
 const trackedRefreshInFlight = new Map();
 
-// Yahoo throttles bursts hard (HTTP 429). Serialize every Yahoo call through one
-// limiter and retry on 429 with exponential backoff so a full refresh stays under
-// the limit instead of getting blocked and leaving fields blank. If we hit a run
-// of 429s we open a short circuit breaker so we stop hammering (which is what keeps
-// the IP throttled) and fall back to Finnhub/cache until it cools off.
+// Yahoo throttles bursts hard (HTTP 429) and, when an IP keeps poking after that,
+// escalates to a connection-level block where the socket never opens (surfaces as
+// "fetch failed"). Every Yahoo call is serialized through one limiter; on failure we
+// open a circuit breaker so we STOP hammering (which is what keeps the IP penalised)
+// and fall back to Finnhub/cache until it cools off.
+//
+// There are TWO independent breakers: the v7 quote endpoint (US batched quotes) and
+// the v8 chart endpoint (international tickers). Keeping them separate means a v7
+// rate-limit storm can't freeze the international chart path, and vice-versa.
 const YAHOO_MIN_INTERVAL_MS = 1000;
 const yahooLimiter = new RateLimiter(YAHOO_MIN_INTERVAL_MS);
 const YAHOO_BREAKER_THRESHOLD = 3;
-// Escalating cooldowns: if Yahoo keeps rejecting us (an IP-level rate-limit
-// penalty, common from residential / non-US connections), we back off for
-// progressively longer instead of poking every 45s - which only keeps the
-// penalty alive. Longer pauses give Yahoo's limit time to actually reset.
+// Escalating cooldowns: if Yahoo keeps rejecting us, back off for progressively
+// longer instead of poking every minute - which only keeps the penalty alive.
 const YAHOO_BREAKER_COOLDOWNS_MS = [60_000, 180_000, 600_000, 1_800_000]; // 1m, 3m, 10m, 30m
-let yahoo429Streak = 0;
-let yahooBreakerUntil = 0;
-let yahooBreakerTrips = 0; // consecutive trips without a success - escalates cooldown
 
-export function yahooBreakerState() {
+function makeYahooBreaker() {
+  return { until: 0, streak: 0, trips: 0 };
+}
+const yahooV7Breaker = makeYahooBreaker();    // v7 /finance/quote  (US batched)
+const yahooChartBreaker = makeYahooBreaker(); // v8 /finance/chart  (international)
+
+function breakerState(breaker) {
   return {
-    open: Date.now() < yahooBreakerUntil,
-    cooldownMsRemaining: Math.max(0, yahooBreakerUntil - Date.now()),
-    streak: yahoo429Streak,
-    consecutiveTrips: yahooBreakerTrips
+    open: Date.now() < breaker.until,
+    cooldownMsRemaining: Math.max(0, breaker.until - Date.now()),
+    streak: breaker.streak,
+    consecutiveTrips: breaker.trips
   };
 }
 
-async function yahooFetch(url, { retries = 4, timeoutMs = 12000, headers = {}, ignoreBreaker = false } = {}) {
-  if (!ignoreBreaker && Date.now() < yahooBreakerUntil) {
+export function yahooBreakerState() {
+  return breakerState(yahooV7Breaker);
+}
+
+export function yahooChartBreakerState() {
+  return breakerState(yahooChartBreaker);
+}
+
+// International tickers (.AX/.L/.CO ...) are Yahoo-only (Finnhub's free tier doesn't
+// cover those exchanges) and ride the same IP Yahoo rate-limits. They also trade on
+// exchanges with NO extended-hours session - one close per day - so refreshing them
+// constantly buys no freshness while keeping the IP on Yahoo's radar. So we fetch
+// them at most a few times a day: the frequent background refresh skips them, and
+// only the ~6h timer elapsing or an explicit "Refresh International" press hits Yahoo.
+const INTL_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000; // ~4 international fetches/day
+const INTL_MANUAL_FLOOR_MS = 2 * 60 * 1000;      // min spacing for the manual button
+let lastIntlRefreshAt = 0;
+function intlRefreshDue(scope) {
+  const elapsed = Date.now() - lastIntlRefreshAt;
+  if (scope === "intl") return elapsed > INTL_MANUAL_FLOOR_MS; // manual button: near-immediate
+  return elapsed > INTL_MIN_INTERVAL_MS;
+}
+
+async function yahooFetch(url, { retries = 4, timeoutMs = 12000, headers = {}, ignoreBreaker = false, breaker = yahooV7Breaker } = {}) {
+  if (!ignoreBreaker && Date.now() < breaker.until) {
     throw new Error("Yahoo paused (rate-limit cooldown active)");
   }
-  // Cooldown just expired: give Yahoo a clean slate. Without this the streak
-  // stayed at its tripped value, so the very next 429 re-opened the breaker
-  // immediately and it never recovered.
-  if (yahooBreakerUntil && Date.now() >= yahooBreakerUntil) {
-    yahooBreakerUntil = 0;
-    yahoo429Streak = 0;
+  // Cooldown just expired: give Yahoo a clean slate. Without this the streak stays at
+  // its tripped value, so the very next failure re-opens the breaker immediately and
+  // it never recovers.
+  if (breaker.until && Date.now() >= breaker.until) {
+    breaker.until = 0;
+    breaker.streak = 0;
   }
   let attempt = 0;
   for (;;) {
@@ -59,25 +87,31 @@ async function yahooFetch(url, { retries = 4, timeoutMs = 12000, headers = {}, i
         headers: { "User-Agent": YAHOO_UA, ...headers }
       }));
       // Success - Yahoo is happy again. Clear the streak AND the escalation level.
-      yahoo429Streak = 0;
-      yahooBreakerTrips = 0;
+      breaker.streak = 0;
+      breaker.trips = 0;
       return result;
     } catch (error) {
       const message = String(error?.message || error);
       const rateLimited = message.includes("429") || /too many requests/i.test(message);
-      if (rateLimited) {
-        yahoo429Streak += 1;
-        if (yahoo429Streak >= YAHOO_BREAKER_THRESHOLD) {
-          const idx = Math.min(yahooBreakerTrips, YAHOO_BREAKER_COOLDOWNS_MS.length - 1);
-          yahooBreakerUntil = Date.now() + YAHOO_BREAKER_COOLDOWNS_MS[idx];
-          yahooBreakerTrips += 1;
+      // A hard IP block does NOT return 429 - the socket never opens, surfacing as
+      // "fetch failed" / a connect timeout. The old breaker only counted 429s, so it
+      // never backed off during a hard block and kept poking the blocked IP (exactly
+      // the failure that froze international tickers). Count connection-level failures
+      // too, so the breaker trips and lets the block cool down and recover.
+      const connectionFailed = /fetch failed|econnrefused|econnreset|etimedout|enotfound|eai_again|und_err|terminated|aborted|socket hang up/i.test(message);
+      if (rateLimited || connectionFailed) {
+        breaker.streak += 1;
+        if (breaker.streak >= YAHOO_BREAKER_THRESHOLD) {
+          const idx = Math.min(breaker.trips, YAHOO_BREAKER_COOLDOWNS_MS.length - 1);
+          breaker.until = Date.now() + YAHOO_BREAKER_COOLDOWNS_MS[idx];
+          breaker.trips += 1;
         }
-        // Do NOT retry a rate-limited request: retrying just sends Yahoo more
-        // 429s and deepens the IP penalty. Fail now and let the breaker (with its
-        // escalating cooldown) hold us off until Yahoo's limit resets.
+        // Do NOT retry a rate-limited OR connection-blocked request: retrying just
+        // sends Yahoo more traffic and deepens the IP penalty. Fail now and let the
+        // breaker (with its escalating cooldown) hold us off until Yahoo resets.
         throw error;
       }
-      // Non-rate-limit error (timeout / transient network): retry with backoff.
+      // Unexpected/transient error (e.g. a malformed response): retry with backoff.
       if (attempt >= retries) throw error;
       attempt += 1;
       const backoff = 700 * 2 ** (attempt - 1) + Math.floor(Math.random() * 350);
@@ -423,14 +457,12 @@ function yahooQuoteFromFields(ticker, fields, fallbackCurrency = "USD", provider
   };
 }
 
-// Fetch many tickers in a SINGLE Yahoo v7 request. The endpoint's `symbols`
-// param accepts a comma-separated list, so this replaces one-request-per-ticker
-// polling (~34 requests every refresh, which is what trips Yahoo's rate limit)
-// with ~2 batched requests. The batched response carries the full record for
-// each symbol - including pre/after-market price + time - so no per-ticker
-// follow-up calls are needed. Returns a Map of normalised symbol -> quote
-// (LIVE quotes only). Chunks that fail (e.g. breaker open) are skipped so those
-// tickers fall back to the per-ticker provider chain.
+// Fetch many tickers in a SINGLE Yahoo v7 request. The endpoint's `symbols` param
+// accepts a comma-separated list, so this replaces one-request-per-ticker polling
+// with ~1 batched request. NOTE: this is now only called with US/crypto symbols -
+// international names go through the lighter, isolated v8 chart path instead.
+// Returns a Map of normalised symbol -> quote (LIVE quotes only). Chunks that fail
+// (e.g. breaker open) are skipped so those tickers fall back to the per-ticker chain.
 async function yahooBatchQuotes(tickers, chunkSize = 50) {
   const out = new Map();
   const unique = [...new Set((tickers || []).map((t) => normalizeTicker(t)).filter(Boolean))];
@@ -446,7 +478,7 @@ async function yahooBatchQuotes(tickers, chunkSize = 50) {
   const requestWith = async (symbols, session) => {
     const headers = { "Accept": "application/json" };
     if (session.cookie) headers.Cookie = session.cookie;
-    return yahooFetch(buildUrl(symbols, session.crumb), { timeoutMs: 15000, headers });
+    return yahooFetch(buildUrl(symbols, session.crumb), { timeoutMs: 15000, headers, breaker: yahooV7Breaker });
   };
   for (let i = 0; i < unique.length; i += chunkSize) {
     const chunk = unique.slice(i, i + chunkSize);
@@ -485,7 +517,7 @@ async function yahooQuoteEndpoint(ticker, fallbackCurrency = "USD") {
   const requestWith = async (session) => {
     const headers = { "Accept": "application/json" };
     if (session.cookie) headers.Cookie = session.cookie;
-    return yahooFetch(buildUrl(session.crumb), { timeoutMs: 12000, headers });
+    return yahooFetch(buildUrl(session.crumb), { timeoutMs: 12000, headers, breaker: yahooV7Breaker });
   };
   let payload;
   try {
@@ -508,7 +540,7 @@ async function yahooChartQuote(ticker, fallbackCurrency = "USD") {
   url.searchParams.set("range", "2d");
   url.searchParams.set("interval", "5m");
   url.searchParams.set("includePrePost", "true");
-  const payload = await yahooFetch(url, { timeoutMs: 12000 });
+  const payload = await yahooFetch(url, { timeoutMs: 12000, breaker: yahooV7Breaker });
   const result = payload?.chart?.result?.[0];
   const meta = { ...(result?.meta || {}) };
   // The chart endpoint doesn't expose marketState or pre/post prices directly,
@@ -567,6 +599,34 @@ async function yahooChartQuote(ticker, fallbackCurrency = "USD") {
   return yahooQuoteFromFields(ticker, meta, fallbackCurrency, "yahoo");
 }
 
+// Lightweight international quote via the v8 chart endpoint. This endpoint needs NO
+// crumb and NO cookie (unlike v7), and international names have no pre/post session,
+// so daily bars are all we need - the smallest possible chart payload, least likely
+// to time out under throttling. Runs on its OWN breaker (yahooChartBreaker) so it is
+// fully isolated from the US v7 path - a v7 rate-limit storm can't freeze it.
+async function yahooChartQuoteLight(ticker, fallbackCurrency = "USD") {
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}`);
+  url.searchParams.set("range", "5d");
+  url.searchParams.set("interval", "1d");
+  const payload = await yahooFetch(url, { timeoutMs: 12000, retries: 1, breaker: yahooChartBreaker });
+  const result = payload?.chart?.result?.[0];
+  const meta = { ...(result?.meta || {}) };
+  // chart meta carries regularMarketPrice, chartPreviousClose, regularMarketTime,
+  // day high/low, 52-week high/low, volume, currency, exchange. Fall back to the
+  // last non-null daily close if regularMarketPrice is somehow missing.
+  if (meta.regularMarketPrice == null) {
+    const closes = result?.indicators?.quote?.[0]?.close || [];
+    for (let i = closes.length - 1; i >= 0; i -= 1) {
+      if (closes[i] != null) { meta.regularMarketPrice = closes[i]; break; }
+    }
+  }
+  if (meta.regularMarketPreviousClose == null && meta.chartPreviousClose != null) {
+    meta.regularMarketPreviousClose = meta.chartPreviousClose;
+  }
+  meta.marketState = meta.marketState || "CLOSED";
+  return yahooQuoteFromFields(ticker, meta, fallbackCurrency, "yahoo");
+}
+
 export async function debugQuoteSources(ticker) {
   const t = normalizeTicker(ticker);
   const keys = ["price", "changeAmount", "changePercent", "preMarketPrice", "postMarketPrice",
@@ -608,7 +668,7 @@ async function yahooQuoteSummary(ticker, fallbackCurrency = "USD") {
   if (session.crumb) url.searchParams.set("crumb", session.crumb);
   const headers = { "Accept": "application/json" };
   if (session.cookie) headers.Cookie = session.cookie;
-  const payload = await yahooFetch(url, { timeoutMs: 10000, headers });
+  const payload = await yahooFetch(url, { timeoutMs: 10000, headers, breaker: yahooV7Breaker });
   const result = payload?.quoteSummary?.result?.[0];
   if (!result) return null;
   const price = result.price || {};
@@ -837,19 +897,33 @@ export async function resolveTickerInput(rawInput) {
   return raw.toUpperCase();
 }
 
-// Verifies the batched fetch: resets the breaker, runs ONE batched Yahoo call
-// for all tracked tickers, and reports how many resolved and how many carry a
-// pre/after-market price. Used by /api/diag/batch to confirm the fix is working.
+// Verifies the international chart path: clears the breakers, runs the lightweight
+// chart fetch for every tracked international ticker, and reports how many resolved.
+// Used by /api/diag/batch to confirm the international fix is working.
 export async function diagnoseBatch(scope = "all") {
   resetYahooBreaker();
   const tickers = trackedTickers(getDb(), scope);
+  const usTickers = tickers.filter((t) => !t.includes("."));
+  const intlTickers = tickers.filter((t) => t.includes("."));
+
+  // US/crypto via the batched v7 call.
   let batch = new Map();
   let error = null;
   try {
-    batch = await yahooBatchQuotes(tickers);
+    batch = await yahooBatchQuotes(usTickers);
   } catch (err) {
     error = String(err?.message || err);
   }
+  // International via the lightweight chart path (what they actually use now).
+  for (const ticker of intlTickers) {
+    try {
+      const q = await yahooChartQuoteLight(ticker, exchangeCurrencyGuess(ticker));
+      if (q && q.status === "LIVE") batch.set(normalizeTicker(ticker), q);
+    } catch (err) {
+      if (!error) error = `${ticker}: ${String(err?.message || err)}`;
+    }
+  }
+
   const resolved = [];
   const missing = [];
   let withPre = 0;
@@ -878,6 +952,7 @@ export async function diagnoseBatch(scope = "all") {
     withPreMarketPrice: withPre,
     withPostMarketPrice: withPost,
     breaker: yahooBreakerState(),
+    chartBreaker: yahooChartBreakerState(),
     error,
     quotes: resolved
   };
@@ -902,7 +977,8 @@ export async function diagnoseQuote(tickerInput, { reset = false } = {}) {
     ticker,
     crumbObtained: Boolean(session.crumb),
     cookieObtained: Boolean(session.cookie),
-    breaker: yahooBreakerState()
+    breaker: yahooBreakerState(),
+    chartBreaker: yahooChartBreakerState()
   };
   try {
     result.v7 = summarize(await yahooQuoteEndpoint(ticker, "USD"));
@@ -918,6 +994,13 @@ export async function diagnoseQuote(tickerInput, { reset = false } = {}) {
     result.chart = summarize(await yahooChartQuote(ticker, "USD"));
   } catch (error) {
     result.chartError = String(error?.message || error);
+  }
+  // The lightweight chart path is what international tickers actually use - report it
+  // separately so an international diagnosis reflects the real code path.
+  try {
+    result.chartLight = summarize(await yahooChartQuoteLight(ticker, exchangeCurrencyGuess(ticker)));
+  } catch (error) {
+    result.chartLightError = String(error?.message || error);
   }
   return result;
 }
@@ -1000,11 +1083,20 @@ export async function getQuote(tickerInput, { force = false } = {}) {
   if (!force && cacheFresh(cached)) return quoteFromRow(cached, false);
 
   const equity = database.prepare("SELECT * FROM equities WHERE ticker = ?").get(ticker);
-  const fallbackCurrency = normalizeCurrency(equity?.currency, "USD");
+  // Exchange-suffixed names (.AX/.L/.CO ...) are international. Crypto uses a dash
+  // (BTC-USD) and has no dot, so it is NOT treated as international here.
+  const isInternational = ticker.includes(".");
+  const fallbackCurrency = isInternational
+    ? exchangeCurrencyGuess(ticker)
+    : normalizeCurrency(equity?.currency, "USD");
   const needsProfile = !equity?.name || !equity?.currency;
 
-  const providers = yahooFirstTicker(ticker)
-    ? [yahooFinanceQuote, finnhubQuote, alphaVantageQuote]
+  // International tickers: the v8 chart endpoint ONLY (no v7, no crumb, no cookie),
+  // on the isolated chart breaker. Finnhub's free tier doesn't cover these exchanges,
+  // so Alpha Vantage is the only (best-effort) non-Yahoo fallback. US/crypto keep the
+  // full v7 -> Finnhub -> Alpha Vantage chain.
+  const providers = isInternational
+    ? [yahooChartQuoteLight, alphaVantageQuote]
     : [yahooFinanceQuote, finnhubQuote, alphaVantageQuote];
   let lastError = null;
   let bestUnavailableQuote = null;
@@ -1086,7 +1178,7 @@ export function trackedTickers(database = getDb(), scope = "all") {
   if (scope === "intl") {
     // International tickers only (.AX/.L/.CO etc.) - Yahoo-only, no fallback.
     // Used by the on-demand "Refresh International" button so we can fetch just
-    // these few names with a freshly-cleared breaker.
+    // these few names with a freshly-cleared chart breaker.
     return database.prepare(`
       SELECT DISTINCT ticker FROM (${held} UNION ${pulse} UNION ${alerts} UNION ${watch})
       WHERE ticker LIKE '%.%'
@@ -1100,38 +1192,47 @@ export function trackedTickers(database = getDb(), scope = "all") {
 }
 
 export function resetYahooBreaker() {
-  yahooBreakerUntil = 0;
-  yahoo429Streak = 0;
-  yahooBreakerTrips = 0;
+  for (const breaker of [yahooV7Breaker, yahooChartBreaker]) {
+    breaker.until = 0;
+    breaker.streak = 0;
+    breaker.trips = 0;
+  }
+  lastIntlRefreshAt = 0; // let the next refresh re-fetch international tickers immediately
 }
 
 export async function refreshTrackedQuotes({ force = true, scope = "all", resetBreaker = false } = {}) {
   if (trackedRefreshInFlight.has(scope)) return trackedRefreshInFlight.get(scope);
   const run = (async () => {
-    // A manual refresh clears any stuck rate-limit cooldown so the user gets a
-    // fresh attempt on demand (this is the "Refresh Prices" button behaviour).
-    if (resetBreaker) resetYahooBreaker();
-    let tickers = trackedTickers(getDb(), scope);
-    if (resetBreaker) {
-      // International tickers (.AX/.L/.CO) are Yahoo-only with no fallback, so fetch
-      // them FIRST while the breaker is freshly cleared - otherwise the larger US
-      // batch can re-trip the limiter before we ever reach them.
-      const intl = tickers.filter((t) => t.includes("."));
-      const rest = tickers.filter((t) => !t.includes("."));
-      tickers = [...intl, ...rest];
+    // IMPORTANT: a manual refresh no longer clears the v7 breaker. Clearing it on
+    // every "Refresh Prices" press is what kept re-poking Yahoo and escalated the IP
+    // penalty into a hard block, defeating the escalating cooldown. The ONLY manual
+    // reset left is "Refresh International", and it clears ONLY the chart breaker the
+    // international path uses (never v7) + lets the international fetch run now.
+    // (`resetBreaker` is still accepted for call-site compatibility but is
+    // intentionally not honored for the v7 breaker.)
+    if (scope === "intl") {
+      yahooChartBreaker.until = 0;
+      yahooChartBreaker.streak = 0;
+      yahooChartBreaker.trips = 0;
+      lastIntlRefreshAt = 0;
     }
+
     const db = getDb();
-    // ONE batched Yahoo call for every ticker (instead of one call each). This
-    // keeps Yahoo load tiny - so the rate-limit breaker stops tripping - and the
-    // batched response includes pre/after-market prices for all US tickers.
-    let batch = new Map();
-    try {
-      batch = await yahooBatchQuotes(tickers);
-    } catch {
-      batch = new Map();
-    }
+    const tickers = trackedTickers(db, scope);
+    const usTickers = tickers.filter((t) => !t.includes("."));
+    const intlTickers = tickers.filter((t) => t.includes("."));
     const results = [];
-    for (const ticker of tickers) {
+
+    // --- US / crypto: ONE batched v7 call, per-ticker provider chain as fallback ---
+    let batch = new Map();
+    if (usTickers.length) {
+      try {
+        batch = await yahooBatchQuotes(usTickers);
+      } catch {
+        batch = new Map();
+      }
+    }
+    for (const ticker of usTickers) {
       const batched = batch.get(normalizeTicker(ticker));
       if (batched && batched.status === "LIVE") {
         try {
@@ -1150,6 +1251,28 @@ export async function refreshTrackedQuotes({ force = true, scope = "all", resetB
       // use the full provider chain (Yahoo per-ticker -> Finnhub -> Alpha Vantage).
       results.push(await getQuote(ticker, { force }));
     }
+
+    // --- International: lightweight v8 chart only, on its own breaker, THROTTLED ---
+    // These exchanges have one close per day and no fallback, so we fetch them at
+    // most ~4x/day. The frequent background refresh skips them entirely (serving the
+    // last stored close); only the ~6h timer or an explicit "Refresh International"
+    // actually hits Yahoo. This keeps Railway's IP off Yahoo's rate-limit radar.
+    if (intlTickers.length) {
+      if (intlRefreshDue(scope)) {
+        lastIntlRefreshAt = Date.now();
+        for (const ticker of intlTickers) {
+          // getQuote routes international tickers to the chart-only provider chain.
+          results.push(await getQuote(ticker, { force: true }));
+        }
+      } else {
+        // Not due yet - serve the last stored price so the dashboard stays populated.
+        for (const ticker of intlTickers) {
+          const row = db.prepare("SELECT * FROM market_prices WHERE ticker = ?").get(normalizeTicker(ticker));
+          if (row) results.push(quoteFromRow(row, true));
+        }
+      }
+    }
+
     return results;
   })();
   trackedRefreshInFlight.set(scope, run);
