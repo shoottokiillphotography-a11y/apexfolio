@@ -281,6 +281,13 @@ async function handleApi(req, res, url) {
     },
     {
       method: "GET",
+      path: "/api/quote/:ticker",
+      handler: async ({ ticker }) => ({
+        quote: await getQuote(ticker, { force: url.searchParams.get("refresh") === "true" })
+      })
+    },
+    {
+      method: "GET",
       path: "/api/diag/quote/:ticker",
       handler: async ({ ticker }) => diagnoseQuote(ticker, { reset: url.searchParams.get("reset") === "1" })
     },

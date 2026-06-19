@@ -12,6 +12,7 @@ import {
 
 const finnhubLimiter = new RateLimiter(config.finnhubMinIntervalMs);
 const alphaLimiter = new RateLimiter(config.alphaVantageMinIntervalMs);
+const stooqLimiter = new RateLimiter(500);
 const trackedRefreshInFlight = new Map();
 
 // Yahoo throttles bursts hard (HTTP 429) and, when an IP keeps poking after that,
@@ -277,6 +278,11 @@ function yahooPriceScale(input) {
   return raw === "GBp" || upper === "GBX" ? 0.01 : 1;
 }
 
+function stooqPriceScale(ticker, price) {
+  // Stooq commonly returns London prices in pence while the app stores GBP.
+  return ticker.endsWith(".L") && price > 100 ? 0.01 : 1;
+}
+
 function scaledPositiveNumber(value, scale = 1) {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric > 0 ? numeric * scale : null;
@@ -393,6 +399,114 @@ async function alphaVantageQuote(ticker, fallbackCurrency = "USD") {
       error: null
     };
   });
+}
+
+function stooqSymbolCandidates(ticker) {
+  const s = normalizeTicker(ticker);
+  const [rawRoot, suffix] = s.split(".");
+  if (!rawRoot || !suffix) return [];
+  const root = rawRoot.toLowerCase();
+  const noDash = root.replaceAll("-", "");
+  const map = {
+    AX: ["au"],
+    L: ["uk"],
+    CO: ["dk"],
+    DE: ["de"],
+    PA: ["fr"],
+    AS: ["nl"],
+    MI: ["it"],
+    SW: ["ch"],
+    ST: ["se"],
+    OL: ["no"],
+    HK: ["hk"],
+    TO: ["ca"],
+    V: ["ca"],
+    T: ["jp"]
+  };
+  const markets = map[suffix.toUpperCase()] || [];
+  const roots = [...new Set([root, noDash])];
+  return markets.flatMap((market) => roots.map((candidate) => `${candidate}.${market}`));
+}
+
+function parseStooqCsv(text) {
+  const lines = String(text || "").trim().split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return null;
+  const headers = lines[0].split(",").map((item) => item.trim());
+  const values = lines[1].split(",").map((item) => item.trim());
+  const row = Object.fromEntries(headers.map((key, index) => [key, values[index]]));
+  if (!row.Symbol || row.Close === "N/D" || row.Date === "N/D") return null;
+  return row;
+}
+
+async function fetchText(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 12000);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "User-Agent": YAHOO_UA,
+        ...(options.headers || {})
+      }
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return text;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function stooqQuote(ticker, fallbackCurrency = "USD") {
+  const candidates = stooqSymbolCandidates(ticker);
+  if (!candidates.length) throw new Error("Stooq does not support this ticker format");
+  let lastError = null;
+  for (const symbol of candidates) {
+    try {
+      const url = new URL("https://stooq.com/q/l/");
+      url.searchParams.set("s", symbol);
+      url.searchParams.set("f", "sd2t2ohlcv");
+      url.searchParams.set("h", "");
+      url.searchParams.set("e", "csv");
+      const text = await stooqLimiter.enqueue(() => fetchText(url, { timeoutMs: 10000 }));
+      const row = parseStooqCsv(text);
+      const rawClose = Number(row?.Close);
+      if (!row || !Number.isFinite(rawClose) || rawClose <= 0) {
+        lastError = new Error(`Stooq returned no price for ${symbol}`);
+        continue;
+      }
+      const scale = stooqPriceScale(ticker, rawClose);
+      const price = rawClose * scale;
+      const low = Number(row.Low);
+      const high = Number(row.High);
+      const volume = Number(row.Volume);
+      const asOf = row.Date && row.Time && row.Time !== "N/D"
+        ? new Date(`${row.Date}T${row.Time}Z`).toISOString()
+        : nowIso();
+      return {
+        ticker,
+        price,
+        currency: fallbackCurrency,
+        previousClose: null,
+        changeAmount: null,
+        changePercent: null,
+        regularMarketPrice: price,
+        dayLow: Number.isFinite(low) && low > 0 ? low * scale : null,
+        dayHigh: Number.isFinite(high) && high > 0 ? high * scale : null,
+        volume: Number.isFinite(volume) && volume >= 0 ? volume : null,
+        marketState: "CLOSED",
+        exchangeName: "Stooq",
+        provider: "stooq",
+        status: "LIVE",
+        asOf,
+        error: null
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("Stooq returned no live price");
 }
 
 function yahooQuoteFromFields(ticker, fields, fallbackCurrency = "USD", provider = "yahoo") {
@@ -1002,6 +1116,11 @@ export async function diagnoseQuote(tickerInput, { reset = false } = {}) {
   } catch (error) {
     result.chartLightError = String(error?.message || error);
   }
+  try {
+    result.stooq = summarize(await stooqQuote(ticker, exchangeCurrencyGuess(ticker)));
+  } catch (error) {
+    result.stooqError = String(error?.message || error);
+  }
   return result;
 }
 
@@ -1096,7 +1215,7 @@ export async function getQuote(tickerInput, { force = false } = {}) {
   // some symbols/IPs intermittently fail there; fall back to the older Yahoo quote
   // path that previously resolved .AX/.L/.CO names before trying optional providers.
   const providers = isInternational
-    ? [yahooChartQuoteLight, yahooFinanceQuote]
+    ? [yahooChartQuoteLight, yahooFinanceQuote, stooqQuote]
     : [yahooFinanceQuote, finnhubQuote];
   if (config.alphaVantageApiKey) providers.push(alphaVantageQuote);
   let lastError = null;
