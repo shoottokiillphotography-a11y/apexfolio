@@ -509,6 +509,55 @@ async function stooqQuote(ticker, fallbackCurrency = "USD") {
   throw lastError || new Error("Stooq returned no live price");
 }
 
+function asxNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+async function asxQuote(ticker, fallbackCurrency = "AUD") {
+  const symbol = normalizeTicker(ticker);
+  if (!symbol.endsWith(".AX")) throw new Error("ASX provider only supports .AX tickers");
+  const code = symbol.replace(/\.AX$/, "");
+  const url = new URL(`https://www.asx.com.au/asx/1/share/${encodeURIComponent(code)}`);
+  const payload = await stooqLimiter.enqueue(() => fetchJson(url, {
+    timeoutMs: 10000,
+    headers: {
+      "User-Agent": YAHOO_UA,
+      "Accept": "application/json,text/plain,*/*",
+      "Referer": `https://www.asx.com.au/markets/company/${code}`
+    }
+  }));
+  const price = asxNumber(payload?.last_price ?? payload?.lastPrice ?? payload?.price);
+  const previousClose = asxNumber(payload?.previous_close_price ?? payload?.previousClose);
+  if (!Number.isFinite(price) || price <= 0) {
+    throw new Error(`ASX returned no price for ${code}`);
+  }
+  const changeAmount = asxNumber(payload?.change_price ?? payload?.changePrice);
+  const changePercent = asxNumber(payload?.change_in_percent ?? payload?.changePercent);
+  return {
+    ticker: symbol,
+    price,
+    currency: normalizeQuoteCurrency(payload?.currency, fallbackCurrency),
+    previousClose,
+    changeAmount: changeAmount ?? (previousClose ? price - previousClose : null),
+    changePercent: changePercent ?? (previousClose ? roundPercent(((price - previousClose) / previousClose) * 100) : null),
+    regularMarketPrice: price,
+    dayLow: asxNumber(payload?.day_low_price ?? payload?.dayLow),
+    dayHigh: asxNumber(payload?.day_high_price ?? payload?.dayHigh),
+    fiftyTwoWeekLow: asxNumber(payload?.year_low_price ?? payload?.yearLow),
+    fiftyTwoWeekHigh: asxNumber(payload?.year_high_price ?? payload?.yearHigh),
+    marketCap: asxNumber(payload?.market_cap ?? payload?.marketCap),
+    volume: asxNumber(payload?.volume),
+    marketState: "CLOSED",
+    exchangeName: "ASX",
+    provider: "asx",
+    status: "LIVE",
+    asOf: nowIso(),
+    error: null,
+    name: payload?.desc_full || payload?.name || null
+  };
+}
+
 function yahooQuoteFromFields(ticker, fields, fallbackCurrency = "USD", provider = "yahoo") {
   const scale = yahooPriceScale(fields.currency);
   const price = scaledPositiveNumber(fields.regularMarketPrice ?? fields.chartPreviousClose, scale);
@@ -1117,6 +1166,11 @@ export async function diagnoseQuote(tickerInput, { reset = false } = {}) {
     result.chartLightError = String(error?.message || error);
   }
   try {
+    result.asx = summarize(await asxQuote(ticker, exchangeCurrencyGuess(ticker)));
+  } catch (error) {
+    result.asxError = String(error?.message || error);
+  }
+  try {
     result.stooq = summarize(await stooqQuote(ticker, exchangeCurrencyGuess(ticker)));
   } catch (error) {
     result.stooqError = String(error?.message || error);
@@ -1215,7 +1269,9 @@ export async function getQuote(tickerInput, { force = false } = {}) {
   // some symbols/IPs intermittently fail there; fall back to the older Yahoo quote
   // path that previously resolved .AX/.L/.CO names before trying optional providers.
   const providers = isInternational
-    ? [yahooChartQuoteLight, yahooFinanceQuote, stooqQuote]
+    ? (ticker.endsWith(".AX")
+        ? [yahooChartQuoteLight, yahooFinanceQuote, asxQuote, stooqQuote]
+        : [yahooChartQuoteLight, yahooFinanceQuote, stooqQuote])
     : [yahooFinanceQuote, finnhubQuote];
   if (config.alphaVantageApiKey) providers.push(alphaVantageQuote);
   let lastError = null;
