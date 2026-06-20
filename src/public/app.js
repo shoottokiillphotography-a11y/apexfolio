@@ -151,6 +151,10 @@ function saveCachedDashboardSnapshot() {
 }
 
 const cachedDashboardSnapshot = loadCachedDashboardSnapshot();
+const savedPerformanceMode = localStorage.getItem("portfolioPerformanceMode");
+const initialPerformanceMode = ["withCash", "withoutCash"].includes(savedPerformanceMode)
+  ? savedPerformanceMode
+  : "withCash";
 
 const state = {
   dashboard: cachedDashboardSnapshot.dashboard || null,
@@ -172,7 +176,7 @@ const state = {
   autoPrices: urlParams.get("noAuto") === "1" ? false : localStorage.getItem("autoPrices") !== "false",
   importHistoryOpen: localStorage.getItem("importHistoryOpen") === "true",
   portfolioPerformanceRange: localStorage.getItem("portfolioPerformanceRange") || "1y",
-  portfolioPerformanceMode: localStorage.getItem("portfolioPerformanceMode") || "value",
+  portfolioPerformanceMode: initialPerformanceMode,
   portfolioPerformance: null,
   news: cachedDashboardSnapshot.news || null,
   portfolioPerformanceLoading: false,
@@ -253,13 +257,11 @@ const CHART_COLORS = [
 const PERFORMANCE_RANGES = [
   ["1d", "1D"],
   ["1mo", "1M"],
-  ["3mo", "3M"],
-  ["6mo", "6M"],
   ["ytd", "YTD"],
   ["1y", "1Y"],
   ["3y", "3Y"],
   ["5y", "5Y"],
-  ["all", "All"]
+  ["all", "ALL"]
 ];
 const MARKET_CURRENCIES = [
   "USD",
@@ -632,17 +634,26 @@ function renderRangeTabs() {
 function normalizePerformancePoints(points = []) {
   const valid = points
     .filter((point) => point?.value != null && Number.isFinite(Number(point.value)))
-    .map((point) => ({ ...point, value: Number(point.value) }));
+    .map((point) => ({
+      ...point,
+      value: Number(point.value),
+      rawValue: point.rawValue == null ? Number(point.value) : Number(point.rawValue),
+      adjustedValue: point.adjustedValue == null ? null : Number(point.adjustedValue),
+      investedCapital: point.investedCapital == null ? null : Number(point.investedCapital),
+      realizedValue: point.realizedValue == null ? null : Number(point.realizedValue),
+      dividendValue: point.dividendValue == null ? null : Number(point.dividendValue),
+      returnPercent: point.returnPercent == null ? null : Number(point.returnPercent)
+    }));
   return valid.length >= 2 ? valid : valid;
 }
 
-function performancePointsForMode(performance, mode = "value") {
+function performancePointsForMode(performance, mode = "withCash") {
   const points = normalizePerformancePoints(performance?.points || []);
-  if (mode !== "percent" || points.length < 2 || !points[0]?.value) return points;
-  const startValue = points[0].value;
   return points.map((point) => ({
     ...point,
-    value: roundDisplayPercent(((point.value - startValue) / startValue) * 100)
+    value: mode === "withoutCash" && point.adjustedValue != null
+      ? point.adjustedValue
+      : point.rawValue
   }));
 }
 
@@ -662,7 +673,7 @@ function chartScales(points, dims) {
   return { lo, hi, xAt, yAt };
 }
 
-function renderPerformanceChart(selector, performance, emptyMessage = "Loading Yahoo history...", mode = "value") {
+function renderPerformanceChart(selector, performance, emptyMessage = "Loading performance history...", mode = "withCash") {
   const svg = $(selector);
   if (!svg) return;
   const points = performancePointsForMode(performance, mode);
@@ -680,7 +691,7 @@ function renderPerformanceChart(selector, performance, emptyMessage = "Loading Y
   const stroke = positive ? "#22C55E" : "#E5394E";
   const gid = `${selector.replace(/[^a-zA-Z0-9]/g, "")}Fill`;
   const { lo, hi, xAt, yAt } = chartScales(points, dims);
-  const fmtAxis = (value) => mode === "percent" ? `${number(value, 1)}%` : money(value, performance.currency);
+  const fmtAxis = (value) => money(value, performance.currency);
 
   const ticks = 4;
   let grid = "";
@@ -691,6 +702,9 @@ function renderPerformanceChart(selector, performance, emptyMessage = "Loading Y
     grid += `<line x1="${dims.left}" y1="${y.toFixed(1)}" x2="${dims.width - dims.right}" y2="${y.toFixed(1)}" class="chart-grid-line"></line>`;
     yLabels += `<text x="${dims.left - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end" class="chart-label">${escapeHtml(fmtAxis(value))}</text>`;
   }
+  const zeroLine = lo < 0 && hi > 0
+    ? `<line x1="${dims.left}" y1="${yAt(0).toFixed(1)}" x2="${dims.width - dims.right}" y2="${yAt(0).toFixed(1)}" class="chart-zero-line"></line>`
+    : "";
 
   const xCount = Math.min(5, points.length);
   let xLabels = "";
@@ -713,6 +727,7 @@ function renderPerformanceChart(selector, performance, emptyMessage = "Loading Y
       </linearGradient>
     </defs>
     ${grid}
+    ${zeroLine}
     <path d="${area}" fill="url(#${gid})"></path>
     <path d="${line}" fill="none" stroke="${stroke}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path>
     ${yLabels}
@@ -721,9 +736,11 @@ function renderPerformanceChart(selector, performance, emptyMessage = "Loading Y
       <line class="chart-crosshair" y1="${dims.top}" y2="${dims.height - dims.bottom}"></line>
       <circle class="chart-dot" r="4" style="stroke:${stroke}"></circle>
       <g class="chart-tip">
-        <rect class="chart-tip-bg" rx="4" width="120" height="40"></rect>
+        <rect class="chart-tip-bg" rx="8" width="170" height="76"></rect>
         <text class="chart-tip-date" x="10" y="16"></text>
-        <text class="chart-tip-val" x="10" y="32"></text>
+        <text class="chart-tip-val" x="10" y="34"></text>
+        <text class="chart-tip-sub" x="10" y="52"></text>
+        <text class="chart-tip-sub2" x="10" y="68"></text>
       </g>
     </g>
     <rect class="chart-hit" x="${dims.left}" y="${dims.top}" width="${dims.width - dims.left - dims.right}" height="${dims.height - dims.top - dims.bottom}" fill="transparent"></rect>
@@ -739,9 +756,11 @@ function attachChartHover(svg, points, dims, xAt, yAt, performance, mode) {
   const tipBg = svg.querySelector(".chart-tip-bg");
   const tipDate = svg.querySelector(".chart-tip-date");
   const tipVal = svg.querySelector(".chart-tip-val");
+  const tipSub = svg.querySelector(".chart-tip-sub");
+  const tipSub2 = svg.querySelector(".chart-tip-sub2");
   const hit = svg.querySelector(".chart-hit");
   if (!hover || !hit) return;
-  const fmtVal = (value) => mode === "percent" ? `${number(value, 2)}%` : money(value, performance.currency);
+  const fmtVal = (value) => money(value, performance.currency);
   const svgPoint = svg.createSVGPoint ? svg.createSVGPoint() : null;
 
   const toSvgX = (evt) => {
@@ -767,16 +786,21 @@ function attachChartHover(svg, points, dims, xAt, yAt, performance, mode) {
     dot.setAttribute("cx", x.toFixed(1));
     dot.setAttribute("cy", y.toFixed(1));
     tipDate.textContent = point.date;
-    tipVal.textContent = fmtVal(point.value);
+    tipVal.textContent = `${mode === "withoutCash" ? "Pure P&L" : "Portfolio"}: ${fmtVal(point.value)}`;
+    tipSub.textContent = `Raw value: ${fmtVal(point.rawValue ?? point.value)}`;
+    const returnText = point.returnPercent == null ? "n/a" : `${number(point.returnPercent, 2)}%`;
+    tipSub2.textContent = `Return: ${returnText}`;
     const textW = Math.max(
       tipDate.getComputedTextLength ? tipDate.getComputedTextLength() : 0,
-      tipVal.getComputedTextLength ? tipVal.getComputedTextLength() : 0
+      tipVal.getComputedTextLength ? tipVal.getComputedTextLength() : 0,
+      tipSub.getComputedTextLength ? tipSub.getComputedTextLength() : 0,
+      tipSub2.getComputedTextLength ? tipSub2.getComputedTextLength() : 0
     );
-    const boxW = Math.max(110, textW + 20);
+    const boxW = Math.max(170, textW + 20);
     tipBg.setAttribute("width", boxW.toFixed(0));
     let tx = x + 12;
     if (tx + boxW > dims.width - dims.right) tx = x - 12 - boxW;
-    const ty = Math.max(dims.top, Math.min(y - 22, dims.height - dims.bottom - 44));
+    const ty = Math.max(dims.top, Math.min(y - 38, dims.height - dims.bottom - 80));
     tip.setAttribute("transform", `translate(${tx.toFixed(1)},${ty.toFixed(1)})`);
     hover.style.display = "";
   };
@@ -790,73 +814,46 @@ function attachChartHover(svg, points, dims, xAt, yAt, performance, mode) {
 
 function performanceStatsHtml(performance, options = {}) {
   if (!performance?.points?.length) return `<p class="muted">No performance data loaded yet.</p>`;
-  const reliable = performance.performanceReliable !== false;
-  const summary = state.dashboard?.summary || {};
-  const baseCurrency = performance.currency || state.dashboard?.user?.baseCurrency;
-  const canTotalReturn = options.portfolio
-    && summary.costBasisBase != null
-    && (summary.unrealizedBase != null || summary.realizedGainLossBase != null || summary.dividendIncomeBase != null);
-  // When market-movement return isn't reliable (cash on hand / contributions during the
-  // period), fall back to an all-time total return: unrealized + realized + dividends on
-  // invested cost. This is the honest "how much have I made" figure.
-  if (!reliable && canTotalReturn) {
-    const invested = summary.costBasisBase || 0;
-    const totalReturn = (summary.unrealizedBase || 0) + (summary.realizedGainLossBase || 0) + (summary.dividendIncomeBase || 0);
-    const returnPct = invested ? (totalReturn / invested) * 100 : null;
-    const trClass = valueClass(totalReturn);
-    const updatedAt = performance.points?.[performance.points.length - 1]?.date || "latest";
-    return `
-      <div class="performance-metric-strip">
-        <div class="performance-stat">
-          <span>Latest</span>
-          <strong>${money(performance.endValue ?? summary.totalValueBase, baseCurrency)}</strong>
-        </div>
-        <div class="performance-stat">
-          <span>Total P&amp;L</span>
-          <strong class="${trClass}">${signedMoney(totalReturn, baseCurrency)} / ${signedPercent(returnPct)}</strong>
-        </div>
-        <div class="performance-stat">
-          <span>Invested (cost)</span>
-          <strong>${money(invested, baseCurrency)}</strong>
-        </div>
-        <div class="performance-stat">
-          <span>Realized</span>
-          <strong class="${valueClass(summary.realizedGainLossBase || 0)}">${signedMoney(summary.realizedGainLossBase || 0, baseCurrency)}</strong>
-        </div>
-        <div class="performance-stat">
-          <span>Total Return</span>
-          <strong class="${trClass}">${signedPercent(returnPct)}</strong>
-        </div>
-      </div>
-      <div class="performance-provider-row">${escapeHtml(performance.provider || "Yahoo history")} &middot; all-time total return incl. unrealized + realized + dividends &middot; updated ${escapeHtml(updatedAt)}</div>
-    `;
-  }
-  const changeClass = reliable ? valueClass(performance.changeValue || 0) : "neutral";
-  const updatedAt = performance.points?.[performance.points.length - 1]?.date || "latest";
-  const changeText = reliable
-    ? `${signedMoney(performance.changeValue, performance.currency)} / ${signedPercent(performance.changePercent)}`
-    : "Cash-flow history needed";
-  const returnText = reliable ? signedPercent(performance.changePercent) : "--";
+  const mode = options.portfolio ? state.portfolioPerformanceMode : "withCash";
+  const plotted = performancePointsForMode(performance, mode);
+  const first = plotted[0] || {};
+  const last = plotted[plotted.length - 1] || {};
+  const changeValue = last.value != null && first.value != null ? roundCurrency(last.value - first.value) : null;
+  const changePercent = first.value ? roundDisplayPercent((changeValue / first.value) * 100) : null;
+  const latestLabel = mode === "withoutCash" ? "Pure P&L" : "Latest Value";
+  const changeLabel = mode === "withoutCash" ? "P&L Change" : `${performance.label || performance.range || "Range"} Change`;
+  const changeClass = valueClass(changeValue || 0);
+  const updatedAt = last.date || "latest";
+  const returnText = mode === "withoutCash"
+    ? (last.returnPercent == null ? "--" : `${number(last.returnPercent, 2)}%`)
+    : signedPercent(changePercent);
+  const providerNote = mode === "withoutCash"
+    ? (performance.includesRealized ? "cash-adjusted P&L incl. realized + dividends" : "cash-adjusted P&L on current holdings")
+    : "raw portfolio value incl. cash additions";
   return `
     <div class="performance-metric-strip">
     <div class="performance-stat">
-      <span>Latest</span>
-      <strong>${money(performance.endValue, performance.currency)}</strong>
+      <span>${escapeHtml(latestLabel)}</span>
+      <strong class="${mode === "withoutCash" ? valueClass(last.value || 0) : ""}">${money(last.value, performance.currency)}</strong>
     </div>
     <div class="performance-stat">
-      <span>${escapeHtml(performance.label || performance.range || "Range")} Change</span>
-      <strong class="${changeClass}">${escapeHtml(changeText)}</strong>
+      <span>${escapeHtml(changeLabel)}</span>
+      <strong class="${changeClass}">${signedMoney(changeValue, performance.currency)} / ${signedPercent(changePercent)}</strong>
     </div>
     <div class="performance-stat">
       <span>Starting Value</span>
-      <strong>${money(performance.startValue, performance.currency)}</strong>
+      <strong>${money(first.value, performance.currency)}</strong>
     </div>
     <div class="performance-stat">
       <span>Return</span>
       <strong class="${changeClass}">${escapeHtml(returnText)}</strong>
     </div>
+    <div class="performance-stat">
+      <span>Realized + Dividends</span>
+      <strong>${money((last.realizedValue || 0) + (last.dividendValue || 0), performance.currency)}</strong>
     </div>
-    <div class="performance-provider-row">${escapeHtml(performance.provider || "Yahoo history")} · ${reliable ? "market movement return" : "value history only, return unavailable"} · updated ${escapeHtml(updatedAt)}${performance.warnings?.length ? ` · ${performance.warnings.length} data warnings` : ""}</div>
+    </div>
+    <div class="performance-provider-row">${escapeHtml(performance.provider || "historical prices")} · ${escapeHtml(providerNote)} · updated ${escapeHtml(updatedAt)}${performance.warnings?.length ? ` · ${performance.warnings.length} data warnings` : ""}</div>
   `;
 }
 
@@ -867,32 +864,27 @@ function currentPortfolioPerformance(performance) {
   if (!performance?.points?.length || currentTotal == null || !baseCurrency) return performance;
   const points = performance.points.map((point) => ({ ...point }));
   const last = points[points.length - 1];
-  // Historical bars use close prices; the final point is deliberately replaced
-  // with the live portfolio total, including cash, so the chart matches the dashboard.
+  const currentPnl = performance.range === "all"
+    ? (summary.unrealizedBase || 0) + (summary.realizedGainLossBase || 0) + (summary.dividendIncomeBase || 0)
+    : (summary.unrealizedBase || 0);
   points[points.length - 1] = {
     ...last,
     value: roundCurrency(currentTotal),
+    rawValue: roundCurrency(currentTotal),
+    adjustedValue: roundCurrency(currentPnl),
+    realizedValue: performance.range === "all" ? roundCurrency(summary.realizedGainLossBase || 0) : (last.realizedValue || 0),
+    dividendValue: performance.range === "all" ? roundCurrency(summary.dividendIncomeBase || 0) : (last.dividendValue || 0),
     date: new Date().toISOString().slice(0, 10),
     time: new Date().toISOString()
   };
-  if (performance.range === "1d" && summary.priorSessionValueBase != null && summary.dayChangeBase != null) {
-    points[0] = {
-      ...points[0],
-      value: roundCurrency(summary.priorSessionValueBase)
-    };
-  }
-  const startValue = performance.range === "1d" && summary.priorSessionValueBase != null
-    ? roundCurrency(summary.priorSessionValueBase)
-    : performance.startValue ?? points[0]?.value ?? null;
+  const startValue = points[0]?.rawValue ?? points[0]?.value ?? null;
   const endValue = roundCurrency(currentTotal);
-  const reliable = performance.range === "1d" ? summary.dayChangeBase != null : performance.performanceReliable !== false;
-  const changeValue = performance.range === "1d" && summary.dayChangeBase != null
-    ? roundCurrency(summary.dayChangeBase)
-    : reliable && startValue != null ? roundCurrency(endValue - startValue) : null;
-  const changePercent = performance.range === "1d" && summary.dayChangePercent != null
-    ? summary.dayChangePercent
-    : reliable && startValue ? roundDisplayPercent((changeValue / startValue) * 100) : null;
-  const provider = String(performance.provider || "Yahoo history").replace(/\s+\+\s+live.*$/i, "");
+  const changeValue = startValue != null ? roundCurrency(endValue - startValue) : null;
+  const changePercent = startValue ? roundDisplayPercent((changeValue / startValue) * 100) : null;
+  const adjustedStart = points[0]?.adjustedValue ?? null;
+  const adjustedEnd = points[points.length - 1]?.adjustedValue ?? null;
+  const adjustedChange = adjustedStart != null && adjustedEnd != null ? roundCurrency(adjustedEnd - adjustedStart) : null;
+  const provider = String(performance.provider || "historical prices").replace(/\s+\+\s+live.*$/i, "");
   return {
     ...performance,
     points,
@@ -900,7 +892,11 @@ function currentPortfolioPerformance(performance) {
     endValue,
     changeValue,
     changePercent,
-    performanceReliable: reliable,
+    startAdjustedValue: adjustedStart,
+    endAdjustedValue: adjustedEnd,
+    adjustedChangeValue: adjustedChange,
+    adjustedChangePercent: adjustedStart ? roundDisplayPercent((adjustedChange / adjustedStart) * 100) : null,
+    performanceReliable: true,
     provider: `${provider} + live dashboard value`
   };
 }
@@ -1185,10 +1181,15 @@ function renderPortfolioPerformance() {
     if (button) button.textContent = collapsed ? "Show chart" : "Hide chart";
   });
   const modeToggle = $("#performanceModeToggle");
-  if (modeToggle) modeToggle.textContent = state.portfolioPerformanceMode === "percent" ? "Return %" : "Value";
-  const loadingText = state.portfolioPerformanceLoading ? "Loading historical prices..." : "Choose a range to load historical prices.";
+  if (modeToggle) {
+    modeToggle.textContent = state.portfolioPerformanceMode === "withCash" ? "With Cash" : "No Cash Adds";
+    modeToggle.title = state.portfolioPerformanceMode === "withCash"
+      ? "Raw portfolio value including cash additions"
+      : "Investment performance excluding cash additions";
+  }
+  const loadingText = state.portfolioPerformanceLoading ? "Loading performance history..." : "Choose a range to load performance.";
   const statusText = performance?.points?.length
-    ? `${performance.points.length} points | ${performance.warnings?.length ? `${performance.warnings.length} gaps` : "Yahoo history"}`
+    ? `${performance.points.length} points | ${performance.warnings?.length ? `${performance.warnings.length} data gaps` : (performance.provider || "historical prices")}`
     : loadingText;
   ["#portfolioPerformanceStatus", "#portfolioPerformanceStatusPortfolio"].forEach((selector) => {
     const node = $(selector);
@@ -1199,10 +1200,10 @@ function renderPortfolioPerformance() {
     if (node) node.innerHTML = performanceStatsHtml(performance, { portfolio: true });
   });
   const emptyMessage = state.portfolioPerformanceLoading
-    ? "Loading Yahoo history..."
+    ? "Loading performance history..."
     : performance?.warnings?.some((warning) => !/cash-flow/i.test(warning))
-      ? "Yahoo history unavailable for this range"
-      : "Choose a range to load historical prices";
+      ? "Some historical prices are unavailable for this range"
+      : "Choose a range to load performance";
   if (!state.dashboardChartCollapsed) renderPerformanceChart("#portfolioPerformanceChart", performance, emptyMessage, state.portfolioPerformanceMode);
   if (!state.portfolioChartCollapsed) renderPerformanceChart("#portfolioPerformanceChartPortfolio", performance, emptyMessage, state.portfolioPerformanceMode);
 }
@@ -3838,7 +3839,7 @@ function renderStockPerformance() {
   renderPerformanceChart(
     "#stockPerformanceChart",
     performance,
-    state.stockLoading ? "Loading Yahoo history..." : "No Yahoo history available for this ticker"
+    state.stockLoading ? "Loading performance history..." : "No historical performance available for this ticker"
   );
 }
 
@@ -5085,7 +5086,7 @@ document.addEventListener("click", async (event) => {
       renderPortfolioPerformance();
     }
     if (action === "togglePerformanceMode") {
-      state.portfolioPerformanceMode = state.portfolioPerformanceMode === "percent" ? "value" : "percent";
+      state.portfolioPerformanceMode = state.portfolioPerformanceMode === "withCash" ? "withoutCash" : "withCash";
       localStorage.setItem("portfolioPerformanceMode", state.portfolioPerformanceMode);
       renderPortfolioPerformance();
     }

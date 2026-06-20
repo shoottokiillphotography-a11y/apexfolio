@@ -1,8 +1,10 @@
 import { getDb } from "../db.js";
+import { config } from "../config.js";
 import {
   fetchJson,
   InputError,
   normalizeTicker,
+  nowIso,
   roundMoney,
   roundPercent,
   safeJsonParse
@@ -12,24 +14,22 @@ import { getFundamentals, getYahooProfile } from "./fundamentals.js";
 import { getQuote } from "./market-data.js";
 
 export const PERFORMANCE_RANGES = {
-  "1d": { yahooRange: "1d", interval: "5m", label: "Day", maxPoints: 120 },
-  "1mo": { yahooRange: "1mo", interval: "1d", label: "Month", maxPoints: 80 },
-  "3mo": { yahooRange: "3mo", interval: "1d", label: "3M", maxPoints: 100 },
-  "6mo": { yahooRange: "6mo", interval: "1d", label: "6M", maxPoints: 120 },
-  ytd: { yahooRange: "ytd", interval: "1d", label: "YTD", maxPoints: 140 },
-  "1y": { yahooRange: "1y", interval: "1d", label: "1Y", maxPoints: 170 },
-  "3y": { yahooRange: "3y", interval: "1wk", label: "3Y", maxPoints: 180, windowDays: 1096 },
-  "5y": { yahooRange: "5y", interval: "1wk", label: "5Y", maxPoints: 220 },
-  all: { yahooRange: "max", interval: "1mo", label: "All", maxPoints: 260 }
+  "1d": { label: "1D", maxPoints: 2, days: 1 },
+  "1mo": { label: "1M", maxPoints: 32, months: 1 },
+  ytd: { label: "YTD", maxPoints: 140, ytd: true },
+  "1y": { label: "1Y", maxPoints: 170, years: 1 },
+  "3y": { label: "3Y", maxPoints: 190, years: 3 },
+  "5y": { label: "5Y", maxPoints: 230, years: 5 },
+  all: { label: "ALL", maxPoints: 280, all: true }
 };
 
-const PORTFOLIO_HISTORY_CONCURRENCY = 8;
-const PORTFOLIO_HISTORY_TIMEOUT_MS = 7000;
+const PORTFOLIO_HISTORY_CONCURRENCY = 6;
+const PORTFOLIO_HISTORY_TIMEOUT_MS = 12000;
 
 function assertRange(rangeInput) {
   const range = String(rangeInput || "1y").toLowerCase();
   if (!PERFORMANCE_RANGES[range]) {
-    throw new InputError("Performance range must be 1d, 1mo, 3mo, 6mo, ytd, 1y, 3y, 5y, or all");
+    throw new InputError("Performance range must be 1d, 1mo, ytd, 1y, 3y, 5y, or all");
   }
   return range;
 }
@@ -51,6 +51,42 @@ function toDateOnly(isoOrDate) {
   return String(isoOrDate || "").slice(0, 10);
 }
 
+function dateAtUtc(dateText) {
+  const [year, month, day] = String(dateText || "").slice(0, 10).split("-").map(Number);
+  return new Date(Date.UTC(year || 1970, (month || 1) - 1, day || 1));
+}
+
+function isoDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(dateText, days) {
+  const date = dateAtUtc(dateText);
+  date.setUTCDate(date.getUTCDate() + days);
+  return isoDate(date);
+}
+
+function shiftDate({ months = 0, years = 0, days = 0 } = {}) {
+  const date = new Date();
+  date.setUTCHours(0, 0, 0, 0);
+  if (years) date.setUTCFullYear(date.getUTCFullYear() - years);
+  if (months) date.setUTCMonth(date.getUTCMonth() - months);
+  if (days) date.setUTCDate(date.getUTCDate() - days);
+  return isoDate(date);
+}
+
+function startDateForRange(range, firstHoldingDate) {
+  const today = isoDate(new Date());
+  const settings = PERFORMANCE_RANGES[range];
+  let start = firstHoldingDate || today;
+  if (settings.ytd) start = `${new Date().getUTCFullYear()}-01-01`;
+  else if (settings.months) start = shiftDate({ months: settings.months });
+  else if (settings.years) start = shiftDate({ years: settings.years });
+  else if (settings.days) start = shiftDate({ days: settings.days });
+  else if (settings.all) start = firstHoldingDate || today;
+  return firstHoldingDate && start < firstHoldingDate ? firstHoldingDate : start;
+}
+
 function thinPoints(points, maxPoints) {
   if (points.length <= maxPoints) return points;
   const step = (points.length - 1) / (maxPoints - 1);
@@ -61,47 +97,261 @@ function thinPoints(points, maxPoints) {
   return thinned.filter((point, index, rows) => index === 0 || point.time !== rows[index - 1].time);
 }
 
-export async function fetchYahooPriceHistory(tickerInput, rangeInput = "1y") {
+function yyyymmdd(dateText) {
+  return String(dateText || "").replaceAll("-", "");
+}
+
+function stooqSymbolCandidates(ticker) {
+  const symbol = normalizeTicker(ticker);
+  const [rawRoot, rawSuffix] = symbol.split(".");
+  const root = (rawRoot || symbol).toLowerCase();
+  const noDash = root.replaceAll("-", "");
+  const suffix = rawSuffix?.toUpperCase();
+  const map = {
+    AX: ["au"],
+    L: ["uk"],
+    CO: ["dk"],
+    HK: ["hk"],
+    DE: ["de"],
+    PA: ["fr"],
+    AS: ["nl"],
+    MI: ["it"],
+    SW: ["ch"],
+    ST: ["se"],
+    OL: ["no"],
+    TO: ["ca"],
+    T: ["jp"]
+  };
+  const markets = suffix ? (map[suffix] || []) : ["us"];
+  return [...new Set(markets.flatMap((market) => [root, noDash].map((candidate) => `${candidate}.${market}`)))];
+}
+
+function eodhdSymbolCandidates(ticker) {
+  const symbol = normalizeTicker(ticker);
+  const match = symbol.match(/^(.+)\.([A-Z0-9-]+)$/);
+  if (!match) return [`${symbol}.US`];
+  const [, root, suffix] = match;
+  const map = {
+    AX: ["AU"],
+    L: ["LSE"],
+    CO: ["CO"],
+    HK: ["HK"],
+    DE: ["XETRA", "F"],
+    PA: ["PA"],
+    AS: ["AS"],
+    MI: ["MI"],
+    SW: ["SW"],
+    ST: ["ST"],
+    OL: ["OL"],
+    TO: ["TO"],
+    T: ["T"]
+  };
+  return [...new Set((map[suffix] || []).map((exchange) => `${root}.${exchange}`))];
+}
+
+async function fetchText(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || PORTFOLIO_HISTORY_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 ApexFolio/1.0",
+        ...(options.headers || {})
+      }
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return text;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseStooqHistoryCsv(text) {
+  const rows = String(text || "").trim().split(/\r?\n/).filter(Boolean);
+  if (rows.length < 2) return [];
+  const headers = rows[0].split(",").map((item) => item.trim());
+  const dateIndex = headers.indexOf("Date");
+  const closeIndex = headers.indexOf("Close");
+  if (dateIndex < 0 || closeIndex < 0) return [];
+  return rows.slice(1).map((line) => {
+    const values = line.split(",").map((item) => item.trim());
+    const close = Number(values[closeIndex]);
+    const date = values[dateIndex];
+    if (!date || !Number.isFinite(close) || close <= 0) return null;
+    return { date, time: `${date}T00:00:00.000Z`, value: close };
+  }).filter(Boolean);
+}
+
+async function fetchStooqPriceHistory(ticker, fromDate, toDate, fallbackCurrency = "USD") {
+  let lastError = null;
+  for (const symbol of stooqSymbolCandidates(ticker)) {
+    try {
+      const url = new URL("https://stooq.com/q/d/l/");
+      url.searchParams.set("s", symbol);
+      url.searchParams.set("i", "d");
+      url.searchParams.set("d1", yyyymmdd(fromDate));
+      url.searchParams.set("d2", yyyymmdd(toDate));
+      const text = await fetchText(url);
+      const rawPoints = parseStooqHistoryCsv(text);
+      if (!rawPoints.length) {
+        lastError = new Error(`Stooq returned no history for ${symbol}`);
+        continue;
+      }
+      const scale = ticker.endsWith(".L") && rawPoints.some((point) => point.value > 100) ? 0.01 : 1;
+      return {
+        ticker,
+        currency: fallbackCurrency,
+        provider: "stooq",
+        points: rawPoints.map((point) => ({ ...point, value: roundMoney(point.value * scale) }))
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error(`Stooq returned no history for ${ticker}`);
+}
+
+async function fetchEodhdPriceHistory(ticker, fromDate, toDate, fallbackCurrency = "USD") {
+  if (!config.eodhdApiKey || !config.eodhdHistoryEnabled) throw new Error("EODHD historical prices are not enabled");
+  let lastError = null;
+  for (const symbol of eodhdSymbolCandidates(ticker)) {
+    try {
+      const url = new URL(`https://eodhd.com/api/eod/${encodeURIComponent(symbol)}`);
+      url.searchParams.set("from", fromDate);
+      url.searchParams.set("to", toDate);
+      url.searchParams.set("period", "d");
+      url.searchParams.set("fmt", "json");
+      url.searchParams.set("api_token", config.eodhdApiKey);
+      const payload = await fetchJson(url, { timeoutMs: PORTFOLIO_HISTORY_TIMEOUT_MS });
+      const rows = Array.isArray(payload) ? payload : [];
+      const points = rows.map((row) => {
+        const date = row.date || row.price_date;
+        const close = Number(row.adjusted_close ?? row.close);
+        if (!date || !Number.isFinite(close) || close <= 0) return null;
+        return { date, time: `${date}T00:00:00.000Z`, value: roundMoney(close) };
+      }).filter(Boolean);
+      if (!points.length) {
+        lastError = new Error(`EODHD returned no history for ${symbol}`);
+        continue;
+      }
+      return { ticker, currency: fallbackCurrency, provider: "eodhd", points };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error(`EODHD returned no history for ${ticker}`);
+}
+
+function cachedHistory(database, ticker, fromDate, toDate) {
+  const rows = database.prepare(`
+    SELECT price_date AS date, close AS value, currency, provider, updated_at AS updatedAt
+    FROM historical_prices
+    WHERE ticker = ? AND price_date >= ? AND price_date <= ?
+    ORDER BY price_date
+  `).all(ticker, fromDate, toDate);
+  if (!rows.length) return null;
+  const latestUpdate = rows.reduce((max, row) => (!max || row.updatedAt > max ? row.updatedAt : max), "");
+  const fresh = latestUpdate && Date.now() - new Date(latestUpdate).getTime() < config.performanceHistoryCacheHours * 60 * 60 * 1000;
+  return {
+    ticker,
+    currency: rows[0].currency,
+    provider: fresh ? `cached ${rows[0].provider}` : `stale cached ${rows[0].provider}`,
+    fresh,
+    points: rows.map((row) => ({
+      date: row.date,
+      time: `${row.date}T00:00:00.000Z`,
+      value: Number(row.value)
+    })).filter((point) => Number.isFinite(point.value) && point.value > 0)
+  };
+}
+
+function saveHistory(database, history) {
+  if (!history?.points?.length) return;
+  const insert = database.prepare(`
+    INSERT INTO historical_prices (ticker, price_date, close, currency, provider, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(ticker, price_date) DO UPDATE SET
+      close = excluded.close,
+      currency = excluded.currency,
+      provider = excluded.provider,
+      updated_at = excluded.updated_at
+  `);
+  const updatedAt = nowIso();
+  for (const point of history.points) {
+    insert.run(history.ticker, point.date, point.value, history.currency, history.provider, updatedAt);
+  }
+}
+
+function syntheticHistoryForTicker(ticker, lots, realizedRows, currentQuote, fallbackCurrency, fromDate, toDate) {
+  const points = [];
+  for (const lot of lots.filter((row) => row.ticker === ticker)) {
+    const date = toDateOnly(lot.purchase_date);
+    if (date && date >= fromDate && date <= toDate) {
+      points.push({ date, time: `${date}T00:00:00.000Z`, value: Number(lot.purchase_price) || null });
+    }
+  }
+  for (const row of realizedRows.filter((item) => item.ticker === ticker)) {
+    const date = toDateOnly(row.soldAt);
+    if (date && date >= fromDate && date <= toDate) {
+      points.push({ date, time: `${date}T00:00:00.000Z`, value: Number(row.salePrice) || null });
+    }
+  }
+  if (currentQuote?.price) points.push({ date: toDate, time: `${toDate}T23:59:59.000Z`, value: Number(currentQuote.price) });
+  const deduped = new Map();
+  for (const point of points) {
+    if (Number.isFinite(point.value) && point.value > 0) deduped.set(point.date, point);
+  }
+  return {
+    ticker,
+    currency: currentQuote?.currency || fallbackCurrency,
+    provider: "broker fallback",
+    synthetic: true,
+    points: [...deduped.values()].sort((a, b) => a.date.localeCompare(b.date))
+  };
+}
+
+async function fetchPriceHistory(tickerInput, rangeInput = "1y", options = {}) {
   const ticker = normalizeTicker(tickerInput);
   if (!ticker) throw new InputError("Ticker is required");
   const range = assertRange(rangeInput);
-  const settings = PERFORMANCE_RANGES[range];
-  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}`);
-  if (settings.windowDays) {
-    const period2 = Math.floor(Date.now() / 1000);
-    const period1 = period2 - settings.windowDays * 24 * 60 * 60;
-    url.searchParams.set("period1", String(period1));
-    url.searchParams.set("period2", String(period2));
-  } else {
-    url.searchParams.set("range", settings.yahooRange);
+  const database = getDb();
+  const fromDate = options.fromDate || startDateForRange(range, options.firstHoldingDate);
+  const toDate = options.toDate || isoDate(new Date());
+  const fallbackCurrency = normalizeQuoteCurrency(options.currency, "USD");
+  const cached = cachedHistory(database, ticker, fromDate, toDate);
+  if (cached?.fresh && cached.points.length >= 2) return cached;
+  const providers = [fetchStooqPriceHistory, fetchEodhdPriceHistory];
+  let lastError = null;
+  for (const provider of providers) {
+    try {
+      const history = await provider(ticker, fromDate, toDate, fallbackCurrency);
+      if (history.points.length) {
+        saveHistory(database, history);
+        return history;
+      }
+    } catch (error) {
+      lastError = error;
+    }
   }
-  url.searchParams.set("interval", settings.interval);
-  url.searchParams.set("includePrePost", "false");
-  const payload = await fetchJson(url, { timeoutMs: PORTFOLIO_HISTORY_TIMEOUT_MS });
-  const result = payload?.chart?.result?.[0];
-  const timestamps = result?.timestamp || [];
-  const closes = result?.indicators?.quote?.[0]?.close || [];
-  const meta = result?.meta || {};
-  const scale = yahooPriceScale(meta.currency);
-  const currency = normalizeQuoteCurrency(meta.currency, meta.currency || "USD");
-  const points = timestamps.map((timestamp, index) => {
-    const close = Number(closes[index]);
-    if (!Number.isFinite(close) || close <= 0) return null;
-    const time = new Date(timestamp * 1000).toISOString();
-    return {
-      time,
-      date: time.slice(0, 10),
-      value: roundMoney(close * scale)
-    };
-  }).filter(Boolean);
-  if (!points.length) throw new Error(`Yahoo Finance returned no historical prices for ${ticker}`);
-  return {
+  if (cached?.points?.length) return cached;
+  const synthetic = syntheticHistoryForTicker(
     ticker,
-    range,
-    currency,
-    provider: "yahoo",
-    points: thinPoints(points, settings.maxPoints)
-  };
+    options.lots || [],
+    options.realizedRows || [],
+    options.currentQuote || null,
+    fallbackCurrency,
+    fromDate,
+    toDate
+  );
+  if (synthetic.points.length) return synthetic;
+  throw lastError || new Error(`No historical prices available for ${ticker}`);
+}
+
+export async function fetchYahooPriceHistory(tickerInput, rangeInput = "1y") {
+  return fetchPriceHistory(tickerInput, rangeInput);
 }
 
 async function mapWithConcurrency(items, limit, worker) {
@@ -118,14 +368,14 @@ async function mapWithConcurrency(items, limit, worker) {
   return results;
 }
 
-function performanceSummary(points) {
-  const first = points.find((point) => point.value != null);
-  const last = [...points].reverse().find((point) => point.value != null);
-  const changeValue = first && last ? roundMoney(last.value - first.value) : null;
-  const changePercent = first?.value ? roundPercent((changeValue / first.value) * 100) : null;
+function performanceSummary(points, key = "value") {
+  const first = points.find((point) => point[key] != null);
+  const last = [...points].reverse().find((point) => point[key] != null);
+  const changeValue = first && last ? roundMoney(last[key] - first[key]) : null;
+  const changePercent = first?.[key] ? roundPercent((changeValue / first[key]) * 100) : null;
   return {
-    startValue: first?.value ?? null,
-    endValue: last?.value ?? null,
+    startValue: first?.[key] ?? null,
+    endValue: last?.[key] ?? null,
     changeValue,
     changePercent
   };
@@ -143,26 +393,24 @@ async function rateFor(fromCurrency, toCurrency, cache) {
   return cache.get(key);
 }
 
-function quantityAtPoint(lot, salesByLot, pointDate) {
+function quantityHeldAtDate(lot, salesByLot, pointDate, currentOnly = false) {
   if (pointDate < toDateOnly(lot.purchase_date)) return 0;
-  let quantity = Number(lot.quantity) || 0;
+  if (currentOnly) return Number(lot.quantity) || 0;
+  let quantity = Number(lot.original_quantity) || 0;
   for (const sale of salesByLot.get(lot.id) || []) {
-    if (toDateOnly(sale.sold_at) > pointDate) quantity += Number(sale.quantity) || 0;
+    if (toDateOnly(sale.sold_at) <= pointDate) quantity -= Number(sale.quantity) || 0;
   }
-  return quantity;
+  return Math.max(0, quantity);
 }
 
-function priceAtOrBefore(history, pointTime) {
+function priceAtOrBefore(history, pointDate, fallback = null) {
   if (!history?.points?.length) return null;
   let latest = null;
   for (const point of history.points) {
-    if (point.time <= pointTime) latest = point;
+    if (point.date <= pointDate) latest = point;
     else break;
   }
-  // Different exchanges publish intraday bars in different time zones. If an
-  // ASX/LSE/EU ticker has not printed a bar at the portfolio anchor time yet,
-  // use its earliest available bar instead of dropping the position to zero.
-  return latest?.value ?? history.points[0]?.value ?? null;
+  return latest?.value ?? (history.points[0]?.date >= pointDate ? history.points[0]?.value : null) ?? fallback;
 }
 
 async function cashValueBase(database, userId, baseCurrency, fxCache) {
@@ -175,123 +423,327 @@ async function cashValueBase(database, userId, baseCurrency, fxCache) {
   return value;
 }
 
+function buildAnchorDates(histories, startDate, endDate, maxPoints) {
+  const dates = new Set([startDate, endDate]);
+  for (const history of histories.values()) {
+    for (const point of history.points || []) {
+      if (point.date >= startDate && point.date <= endDate) dates.add(point.date);
+    }
+  }
+  if (dates.size < 3) {
+    const start = dateAtUtc(startDate);
+    const end = dateAtUtc(endDate);
+    const totalDays = Math.max(1, Math.round((end - start) / 86_400_000));
+    const step = totalDays > 900 ? 7 : 1;
+    for (let offset = 0; offset <= totalDays; offset += step) dates.add(addDays(startDate, offset));
+  }
+  return thinPoints([...dates].sort().map((date) => ({ date, time: `${date}T00:00:00.000Z` })), maxPoints)
+    .map((point) => point.date);
+}
+
+async function baseCostForLot(lot, quantity, baseCurrency, fxCache) {
+  const rate = await rateFor(lot.purchase_currency, baseCurrency, fxCache);
+  return (Number(quantity) || 0) * (Number(lot.purchase_price) || 0) * rate;
+}
+
+async function realizedMath(row, baseCurrency, fxCache) {
+  const quantity = Number(row.quantity) || 0;
+  const buyCurrency = row.lotPurchaseCurrency || row.manualBuyCurrency;
+  const buyPrice = row.lotPurchaseCurrency ? row.lotPurchasePrice : row.manualBuyPrice;
+  const costBasisBase = buyCurrency
+    ? quantity * (Number(buyPrice) || 0) * await rateFor(buyCurrency, baseCurrency, fxCache)
+    : Number(row.storedCostBasisBase) || 0;
+  const proceedsBase = row.saleCurrency
+    ? quantity * (Number(row.salePrice) || 0) * await rateFor(row.saleCurrency, baseCurrency, fxCache)
+    : Number(row.storedProceedsBase) || 0;
+  return { costBasisBase, proceedsBase, gainLossBase: proceedsBase - costBasisBase };
+}
+
+async function dividendBase(row, baseCurrency, fxCache) {
+  const rate = await rateFor(row.currency, baseCurrency, fxCache);
+  return (Number(row.grossAmount) || 0) * rate;
+}
+
+async function oneDayPortfolioPerformance(lots, baseCurrency, cashBase, fxCache) {
+  const tickers = [...new Set(lots.map((lot) => lot.ticker))];
+  const quotes = new Map();
+  await mapWithConcurrency(tickers, PORTFOLIO_HISTORY_CONCURRENCY, async (ticker) => {
+    quotes.set(ticker, await getQuote(ticker).catch(() => null));
+  });
+  let startRaw = cashBase;
+  let endRaw = cashBase;
+  let startCost = 0;
+  let endCost = 0;
+  const warnings = [];
+  for (const lot of lots) {
+    const quote = quotes.get(lot.ticker);
+    const rate = await rateFor(quote?.currency || lot.purchase_currency, baseCurrency, fxCache);
+    const qty = Number(lot.quantity) || 0;
+    const endPrice = Number(quote?.price);
+    const startPrice = Number(quote?.previousClose ?? quote?.regularMarketPrice ?? quote?.price);
+    const cost = await baseCostForLot(lot, qty, baseCurrency, fxCache);
+    startCost += cost;
+    endCost += cost;
+    if (Number.isFinite(startPrice) && startPrice > 0) startRaw += startPrice * qty * rate;
+    else warnings.push(`${lot.ticker}: previous close unavailable`);
+    if (Number.isFinite(endPrice) && endPrice > 0) endRaw += endPrice * qty * rate;
+    else warnings.push(`${lot.ticker}: live quote unavailable`);
+  }
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+  const points = [
+    {
+      date: isoDate(yesterday),
+      time: yesterday.toISOString(),
+      value: roundMoney(startRaw),
+      rawValue: roundMoney(startRaw),
+      adjustedValue: roundMoney(startRaw - startCost),
+      investedCapital: roundMoney(startCost),
+      realizedValue: 0,
+      dividendValue: 0,
+      returnPercent: startCost ? roundPercent(((startRaw - startCost) / startCost) * 100) : null
+    },
+    {
+      date: isoDate(now),
+      time: now.toISOString(),
+      value: roundMoney(endRaw),
+      rawValue: roundMoney(endRaw),
+      adjustedValue: roundMoney(endRaw - endCost),
+      investedCapital: roundMoney(endCost),
+      realizedValue: 0,
+      dividendValue: 0,
+      returnPercent: endCost ? roundPercent(((endRaw - endCost) / endCost) * 100) : null
+    }
+  ];
+  const raw = performanceSummary(points, "rawValue");
+  const adjusted = performanceSummary(points, "adjustedValue");
+  return {
+    range: "1d",
+    label: PERFORMANCE_RANGES["1d"].label,
+    currency: baseCurrency,
+    provider: "live quotes + previous close",
+    points,
+    ...raw,
+    startAdjustedValue: adjusted.startValue,
+    endAdjustedValue: adjusted.endValue,
+    adjustedChangeValue: adjusted.changeValue,
+    adjustedChangePercent: adjusted.changePercent,
+    performanceReliable: true,
+    baselineDate: points[0].date,
+    includesRealized: false,
+    warnings
+  };
+}
+
 export async function portfolioPerformance(userId, rangeInput = "1y") {
   const range = assertRange(rangeInput);
   const database = getDb();
   const user = database.prepare("SELECT * FROM users WHERE id = ?").get(userId);
   const baseCurrency = user.base_currency;
-  const lots = database.prepare(`
+  const allLots = database.prepare(`
     SELECT id, ticker, original_quantity, quantity, purchase_price, purchase_currency, purchase_date
     FROM holding_lots
     WHERE user_id = ? AND original_quantity > 0
     ORDER BY ticker, purchase_date
   `).all(userId);
-  if (!lots.length) {
+  if (!allLots.length) {
     return { range, currency: baseCurrency, points: [], ...performanceSummary([]), warnings: ["No lots found"] };
+  }
+  const currentOnly = range !== "all";
+  const lots = currentOnly ? allLots.filter((lot) => Number(lot.quantity) > 0) : allLots;
+  if (!lots.length) {
+    return { range, currency: baseCurrency, points: [], ...performanceSummary([]), warnings: ["No open holdings found"] };
   }
 
   const salesByLot = new Map();
-  database.prepare(`
-    SELECT lot_id, quantity, sold_at
-    FROM realized_lots
-    WHERE user_id = ? AND lot_id IS NOT NULL
-    ORDER BY sold_at
-  `).all(userId).forEach((sale) => {
-    if (!salesByLot.has(sale.lot_id)) salesByLot.set(sale.lot_id, []);
-    salesByLot.get(sale.lot_id).push(sale);
+  const realizedSourceRows = database.prepare(`
+    SELECT r.ticker, r.quantity, r.sale_price AS salePrice, r.sale_currency AS saleCurrency,
+      r.sold_at AS soldAt, r.cost_basis_base AS storedCostBasisBase,
+      r.proceeds_base AS storedProceedsBase, r.gain_loss_base AS storedGainLossBase,
+      r.buy_price AS manualBuyPrice, r.buy_currency AS manualBuyCurrency,
+      r.bought_at AS manualBoughtAt, l.purchase_price AS lotPurchasePrice,
+      l.purchase_currency AS lotPurchaseCurrency, l.purchase_date AS lotPurchaseDate,
+      r.lot_id AS lotId
+    FROM realized_lots r
+    LEFT JOIN holding_lots l ON l.id = r.lot_id
+    WHERE r.user_id = ?
+    ORDER BY r.sold_at
+  `).all(userId);
+  realizedSourceRows.forEach((sale) => {
+    if (!sale.lotId) return;
+    if (!salesByLot.has(sale.lotId)) salesByLot.set(sale.lotId, []);
+    salesByLot.get(sale.lotId).push({ quantity: sale.quantity, sold_at: sale.soldAt });
   });
 
+  const dividendRows = database.prepare(`
+    SELECT ticker, pay_date AS payDate, ex_date AS exDate, gross_amount AS grossAmount,
+      gross_amount_base AS storedGrossAmountBase, currency
+    FROM dividend_payments
+    WHERE user_id = ?
+    ORDER BY COALESCE(pay_date, ex_date)
+  `).all(userId);
+
+  const firstHoldingDate = [
+    ...allLots.map((lot) => toDateOnly(lot.purchase_date)),
+    ...realizedSourceRows.map((row) => toDateOnly(row.manualBoughtAt || row.lotPurchaseDate))
+  ].filter(Boolean).sort()[0];
+  const startDate = startDateForRange(range, firstHoldingDate);
+  const endDate = isoDate(new Date());
+  const fxCache = new Map();
+  const cashBase = await cashValueBase(database, userId, baseCurrency, fxCache);
+  if (range === "1d") {
+    return oneDayPortfolioPerformance(lots, baseCurrency, cashBase, fxCache);
+  }
+
   const tickers = [...new Set(lots.map((lot) => lot.ticker))];
+  const currentQuotes = new Map();
+  for (const row of database.prepare("SELECT * FROM market_prices").all()) {
+    currentQuotes.set(row.ticker, { price: row.price, currency: row.currency, provider: row.provider });
+  }
   const histories = new Map();
   const warnings = [];
   const historyResults = await mapWithConcurrency(tickers, PORTFOLIO_HISTORY_CONCURRENCY, async (ticker) => {
+    const equityCurrency = database.prepare("SELECT currency FROM equities WHERE ticker = ?").get(ticker)?.currency;
     try {
-      return { ticker, history: await fetchYahooPriceHistory(ticker, range) };
+      return {
+        ticker,
+        history: await fetchPriceHistory(ticker, range, {
+          fromDate: startDate,
+          toDate: endDate,
+          currency: currentQuotes.get(ticker)?.currency || equityCurrency,
+          lots: allLots,
+          realizedRows: realizedSourceRows,
+          currentQuote: currentQuotes.get(ticker)
+        })
+      };
     } catch (error) {
       return { ticker, warning: `${ticker}: ${error.message}` };
     }
   });
   for (const result of historyResults) {
-    if (result?.history) histories.set(result.ticker, result.history);
+    if (result?.history) {
+      histories.set(result.ticker, result.history);
+      if (result.history.synthetic) warnings.push(`${result.ticker}: using broker transaction fallback`);
+    }
     else if (result?.warning) warnings.push(result.warning);
   }
-
-  const anchors = [...histories.values()].sort((a, b) => b.points.length - a.points.length);
-  if (!anchors.length) {
+  if (!histories.size) {
     return { range, currency: baseCurrency, points: [], ...performanceSummary([]), warnings };
   }
 
-  const fxCache = new Map();
-  const cashBase = await cashValueBase(database, userId, baseCurrency, fxCache);
-  const allAnchorPoints = anchors[0].points;
-  const firstLotDate = lots.reduce((min, lot) => {
-    const d = toDateOnly(lot.purchase_date);
-    if (!d) return min;
-    return !min || d < min ? d : min;
-  }, null);
-  const clampedAnchorPoints = firstLotDate
-    ? allAnchorPoints.filter((point) => point.date >= firstLotDate)
-    : allAnchorPoints;
-  const anchorPoints = clampedAnchorPoints.length ? clampedAnchorPoints : allAnchorPoints;
-  const firstDate = anchorPoints[0]?.date || null;
-  const purchaseFlowsDuringRange = firstDate
-    ? lots.filter((lot) => toDateOnly(lot.purchase_date) > firstDate).length
-    : 0;
-  const saleFlowsDuringRange = firstDate
-    ? [...salesByLot.values()].flat().filter((sale) => toDateOnly(sale.sold_at) > firstDate).length
-    : 0;
-  const cashHistoryIncomplete = Math.abs(Number(cashBase) || 0) > 0.01;
-  const performanceReliable = purchaseFlowsDuringRange === 0 && saleFlowsDuringRange === 0 && !cashHistoryIncomplete;
-  if (!performanceReliable) {
-    warnings.push("Portfolio chart is value history only because complete deposit/withdrawal cash-flow history is not available for this range");
-  }
+  const anchorDates = buildAnchorDates(histories, startDate, endDate, PERFORMANCE_RANGES[range].maxPoints);
+  const realizedCache = new Map();
+  const dividendCache = new Map();
   const points = [];
-  for (const anchor of anchorPoints) {
-    let value = cashBase;
+
+  for (const date of anchorDates) {
+    let activeValueBase = cashBase;
+    let activeCostBase = 0;
+    let realizedGainBase = 0;
+    let realizedCostBasisBase = 0;
+    let dividendIncomeBase = 0;
+
     for (const lot of lots) {
-      const quantity = quantityAtPoint(lot, salesByLot, anchor.date);
+      const quantity = quantityHeldAtDate(lot, salesByLot, date, currentOnly);
       if (quantity <= 0) continue;
       const history = histories.get(lot.ticker);
-      const price = priceAtOrBefore(history, anchor.time);
-      if (price == null) continue;
-      const rate = await rateFor(history.currency, baseCurrency, fxCache);
-      value += price * quantity * rate;
+      const price = priceAtOrBefore(history, date, Number(lot.purchase_price) || null);
+      if (price == null) {
+        warnings.push(`${lot.ticker}: missing price around ${date}`);
+        continue;
+      }
+      const rate = await rateFor(history?.currency || lot.purchase_currency, baseCurrency, fxCache);
+      activeValueBase += price * quantity * rate;
+      activeCostBase += await baseCostForLot(lot, quantity, baseCurrency, fxCache);
     }
+
+    if (!currentOnly) {
+      for (const row of realizedSourceRows) {
+        if (toDateOnly(row.soldAt) > date) continue;
+        if (!realizedCache.has(row)) realizedCache.set(row, await realizedMath(row, baseCurrency, fxCache));
+        const item = realizedCache.get(row);
+        realizedGainBase += item.gainLossBase;
+        realizedCostBasisBase += item.costBasisBase;
+      }
+      for (const row of dividendRows) {
+        const eventDate = toDateOnly(row.payDate || row.exDate);
+        if (!eventDate || eventDate > date) continue;
+        if (!dividendCache.has(row)) dividendCache.set(row, await dividendBase(row, baseCurrency, fxCache));
+        dividendIncomeBase += dividendCache.get(row);
+      }
+    }
+
+    const adjustedValue = activeValueBase - cashBase - activeCostBase + realizedGainBase + dividendIncomeBase;
+    const rawValue = activeValueBase + (currentOnly ? 0 : realizedGainBase + dividendIncomeBase);
+    const investedCapital = activeCostBase + realizedCostBasisBase;
     points.push({
-      time: anchor.time,
-      date: anchor.date,
-      value: roundMoney(value)
+      date,
+      time: `${date}T00:00:00.000Z`,
+      value: roundMoney(rawValue),
+      rawValue: roundMoney(rawValue),
+      adjustedValue: roundMoney(adjustedValue),
+      investedCapital: roundMoney(investedCapital),
+      realizedValue: roundMoney(realizedGainBase),
+      dividendValue: roundMoney(dividendIncomeBase),
+      returnPercent: investedCapital ? roundPercent((adjustedValue / investedCapital) * 100) : null
     });
   }
 
-  const summary = performanceSummary(points);
-  if (!performanceReliable) {
-    summary.changeValue = null;
-    summary.changePercent = null;
+  if (range === "all" && points.length) {
+    points[0].adjustedValue = 0;
+    points[0].realizedValue = 0;
+    points[0].dividendValue = 0;
+    points[0].returnPercent = 0;
   }
 
+  const raw = performanceSummary(points, "rawValue");
+  const adjusted = performanceSummary(points, "adjustedValue");
+  const providers = [...new Set([...histories.values()].map((history) => history.provider))].slice(0, 4).join(" + ");
   return {
     range,
     label: PERFORMANCE_RANGES[range].label,
     currency: baseCurrency,
-    provider: "yahoo",
-    points: thinPoints(points, PERFORMANCE_RANGES[range].maxPoints),
-    ...summary,
-    performanceReliable,
-    cashFlowDiagnostics: {
-      purchaseFlowsDuringRange,
-      saleFlowsDuringRange,
-      cashHistoryIncomplete
+    provider: providers || "cached historical prices",
+    points,
+    ...raw,
+    startAdjustedValue: adjusted.startValue,
+    endAdjustedValue: adjusted.endValue,
+    adjustedChangeValue: adjusted.changeValue,
+    adjustedChangePercent: adjusted.changePercent,
+    performanceReliable: true,
+    baselineDate: startDate,
+    includesRealized: !currentOnly,
+    chartModes: {
+      withCash: "Raw portfolio value including capital additions",
+      withoutCash: currentOnly
+        ? "Open-holding investment P&L excluding added capital"
+        : "Total cumulative P&L including realized gains and dividends"
     },
-    warnings
+    cashFlowDiagnostics: {
+      currentOnly,
+      cashIncludedBase: roundMoney(cashBase),
+      realizedRowsIncluded: currentOnly ? 0 : realizedSourceRows.length,
+      dividendRowsIncluded: currentOnly ? 0 : dividendRows.length
+    },
+    warnings: [...new Set(warnings)].slice(0, 20)
   };
 }
 
 export async function tickerPerformance(tickerInput, rangeInput = "1y") {
-  const history = await fetchYahooPriceHistory(tickerInput, rangeInput);
+  const range = assertRange(rangeInput);
+  const ticker = normalizeTicker(tickerInput);
+  const database = getDb();
+  const quote = database.prepare("SELECT currency FROM market_prices WHERE ticker = ?").get(ticker);
+  const equity = database.prepare("SELECT currency FROM equities WHERE ticker = ?").get(ticker);
+  const history = await fetchPriceHistory(ticker, range, {
+    currency: quote?.currency || equity?.currency || "USD"
+  });
   return {
     ...history,
-    label: PERFORMANCE_RANGES[history.range].label,
+    range,
+    label: PERFORMANCE_RANGES[range].label,
+    points: thinPoints(history.points, PERFORMANCE_RANGES[range].maxPoints),
     ...performanceSummary(history.points)
   };
 }

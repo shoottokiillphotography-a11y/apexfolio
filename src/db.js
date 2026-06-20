@@ -161,6 +161,19 @@ function migrate(database) {
       error TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS historical_prices (
+      ticker TEXT NOT NULL,
+      price_date TEXT NOT NULL,
+      close REAL NOT NULL,
+      currency TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (ticker, price_date)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_historical_prices_ticker_date
+      ON historical_prices(ticker, price_date);
+
     CREATE TABLE IF NOT EXISTS exchange_rates (
       pair TEXT PRIMARY KEY,
       from_currency TEXT NOT NULL,

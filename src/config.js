@@ -68,6 +68,8 @@ export const config = {
   eodhdMinIntervalMs: int("EODHD_MIN_INTERVAL_MS", 1100),
   eodhdDailyCallLimit: int("EODHD_DAILY_CALL_LIMIT", 20),
   quoteCacheSeconds: int("QUOTE_CACHE_SECONDS", 60),
+  performanceHistoryCacheHours: int("PERFORMANCE_HISTORY_CACHE_HOURS", 24),
+  eodhdHistoryEnabled: bool("EODHD_HISTORY_ENABLED", false),
   fundamentalCacheSeconds: int("FUNDAMENTAL_CACHE_SECONDS", 86400),
   fxApiUrl: process.env.FX_API_URL || "https://api.frankfurter.app/latest",
   fxCacheHours: int("FX_CACHE_HOURS", 12),
