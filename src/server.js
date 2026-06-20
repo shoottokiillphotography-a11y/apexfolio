@@ -55,7 +55,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, "public");
 // Bump this on each backend release so /api/health and the startup log show which
 // code is actually running - the fastest way to confirm a server restart took.
-const APP_BUILD = "2026-06-17-r10-adaptive-backoff";
+const APP_BUILD = "2026-06-20-manual-intl-eodhd";
 let stopScheduler = null;
 
 async function setSchedulerEnabled(enabled) {
@@ -289,7 +289,10 @@ async function handleApi(req, res, url) {
     {
       method: "GET",
       path: "/api/diag/quote/:ticker",
-      handler: async ({ ticker }) => diagnoseQuote(ticker, { reset: url.searchParams.get("reset") === "1" })
+      handler: async ({ ticker }) => diagnoseQuote(ticker, {
+        reset: url.searchParams.get("reset") === "1",
+        limited: url.searchParams.get("limited") === "1"
+      })
     },
     {
       method: "GET",
@@ -627,10 +630,8 @@ async function handleApi(req, res, url) {
         const force = url.searchParams.get("force") === "false" || body.force === false ? false : true;
         const scopeRaw = url.searchParams.get("scope") || body.scope || "all";
         const scope = ["fast", "alerts", "watchlist", "intl", "all"].includes(scopeRaw) ? scopeRaw : "all";
-        // Manual refreshes (scope "all" = "Refresh Prices", scope "intl" =
-        // "Refresh International") clear the cooldown and prioritise international
-        // tickers. The automatic background refresh (scope "fast") must NOT reset
-        // the breaker, or it would defeat the rate-limit protection.
+        // Scope "intl" is the explicit Refresh International action. It is the only
+        // path allowed to spend the limited international quote provider.
         return refreshTrackedQuotes({ force, scope, resetBreaker: scope === "all" || scope === "intl" });
       }
     },

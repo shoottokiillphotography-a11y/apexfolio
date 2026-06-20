@@ -12,6 +12,7 @@ import {
 
 const finnhubLimiter = new RateLimiter(config.finnhubMinIntervalMs);
 const alphaLimiter = new RateLimiter(config.alphaVantageMinIntervalMs);
+const eodhdLimiter = new RateLimiter(config.eodhdMinIntervalMs);
 const stooqLimiter = new RateLimiter(500);
 const trackedRefreshInFlight = new Map();
 
@@ -54,19 +55,65 @@ export function yahooChartBreakerState() {
   return breakerState(yahooChartBreaker);
 }
 
-// International tickers (.AX/.L/.CO ...) are Yahoo-only (Finnhub's free tier doesn't
-// cover those exchanges) and ride the same IP Yahoo rate-limits. They also trade on
-// exchanges with NO extended-hours session - one close per day - so refreshing them
-// constantly buys no freshness while keeping the IP on Yahoo's radar. So we fetch
-// them at most a few times a day: the frequent background refresh skips them, and
-// only the ~6h timer elapsing or an explicit "Refresh International" press hits Yahoo.
-const INTL_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000; // ~4 international fetches/day
+// International tickers (.AX/.L/.CO ...) are deliberately manual-only. They do not
+// refresh from Finnhub/Alpha/EODHD in the background; the limited international
+// provider is only spent when the user presses "Refresh International".
+const INTL_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000; // kept for old call-site compatibility
 const INTL_MANUAL_FLOOR_MS = 2 * 60 * 1000;      // min spacing for the manual button
 let lastIntlRefreshAt = 0;
+let limitedQuoteUsage = { day: "", eodhd: 0 };
+const LIMITED_USAGE_USER = "system";
+const LIMITED_USAGE_KEY = "eodhd_quote_usage";
+
 function intlRefreshDue(scope) {
   const elapsed = Date.now() - lastIntlRefreshAt;
   if (scope === "intl") return elapsed > INTL_MANUAL_FLOOR_MS; // manual button: near-immediate
   return elapsed > INTL_MIN_INTERVAL_MS;
+}
+
+function usageDay() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function readEodhdUsage(database = getDb()) {
+  const today = usageDay();
+  try {
+    const row = database.prepare("SELECT value_json FROM app_settings WHERE user_id = ? AND key = ?")
+      .get(LIMITED_USAGE_USER, LIMITED_USAGE_KEY);
+    const parsed = row?.value_json ? JSON.parse(row.value_json) : null;
+    limitedQuoteUsage = parsed?.day === today
+      ? { day: today, eodhd: Number(parsed.eodhd) || 0 }
+      : { day: today, eodhd: 0 };
+  } catch {
+    if (limitedQuoteUsage.day !== today) limitedQuoteUsage = { day: today, eodhd: 0 };
+  }
+  return limitedQuoteUsage;
+}
+
+function writeEodhdUsage(database = getDb()) {
+  try {
+    database.prepare(`
+      INSERT INTO app_settings (user_id, key, value_json, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(user_id, key) DO UPDATE SET
+        value_json = excluded.value_json,
+        updated_at = excluded.updated_at
+    `).run(LIMITED_USAGE_USER, LIMITED_USAGE_KEY, JSON.stringify(limitedQuoteUsage), nowIso());
+  } catch {
+    // The in-memory guard still protects this running process if persistence fails.
+  }
+}
+
+function eodhdRemainingCalls(database = getDb()) {
+  const usage = readEodhdUsage(database);
+  return Math.max(0, config.eodhdDailyCallLimit - usage.eodhd);
+}
+
+function spendEodhdCall(database = getDb()) {
+  const remaining = eodhdRemainingCalls(database);
+  if (remaining <= 0) throw new Error("EODHD manual quote budget used for today");
+  limitedQuoteUsage.eodhd += 1;
+  writeEodhdUsage(database);
 }
 
 async function yahooFetch(url, { retries = 4, timeoutMs = 12000, headers = {}, ignoreBreaker = false, breaker = yahooV7Breaker } = {}) {
@@ -425,6 +472,91 @@ function alphaVantageSymbol(ticker) {
     T: "TYO"
   };
   return map[suffix] ? `${root}.${map[suffix]}` : symbol;
+}
+
+function eodhdSymbolCandidates(ticker) {
+  const symbol = normalizeTicker(ticker);
+  const match = symbol.match(/^(.+)\.([A-Z0-9-]+)$/);
+  if (!match) return [];
+  const [, root, suffix] = match;
+  const map = {
+    AX: ["AU"],
+    L: ["LSE"],
+    CO: ["CO"],
+    HK: ["HK"],
+    DE: ["XETRA", "F"],
+    PA: ["PA"],
+    AS: ["AS"],
+    MI: ["MI"],
+    MC: ["MC"],
+    BR: ["BR"],
+    SW: ["SW"],
+    ST: ["ST"],
+    OL: ["OL"],
+    TO: ["TO"],
+    T: ["T"]
+  };
+  return [...new Set((map[suffix] || []).map((exchange) => `${root}.${exchange}`))];
+}
+
+function eodhdPriceScale(ticker, price) {
+  return ticker.endsWith(".L") && price > 100 ? 0.01 : 1;
+}
+
+async function eodhdQuote(ticker, fallbackCurrency = "USD") {
+  if (!config.eodhdApiKey) throw new Error("EODHD_API_KEY is not configured");
+  const candidates = eodhdSymbolCandidates(ticker);
+  if (!candidates.length) throw new Error("EODHD does not support this ticker format");
+  const database = getDb();
+  let lastError = null;
+  for (const symbol of candidates) {
+    spendEodhdCall(database);
+    try {
+      const url = new URL(`https://eodhd.com/api/real-time/${encodeURIComponent(symbol)}`);
+      url.searchParams.set("api_token", config.eodhdApiKey);
+      url.searchParams.set("fmt", "json");
+      const payload = await eodhdLimiter.enqueue(() => fetchJson(url, { timeoutMs: 12000 }));
+      if (payload?.error || payload?.message) {
+        throw new Error(String(payload.error || payload.message));
+      }
+      const rawPrice = Number(payload?.close ?? payload?.price ?? payload?.last);
+      const rawPreviousClose = Number(payload?.previousClose ?? payload?.previous_close ?? payload?.previous);
+      if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
+        lastError = new Error(`EODHD returned no live price for ${symbol}`);
+        continue;
+      }
+      const scale = eodhdPriceScale(ticker, rawPrice);
+      const price = rawPrice * scale;
+      const previousClose = Number.isFinite(rawPreviousClose) && rawPreviousClose > 0 ? rawPreviousClose * scale : null;
+      const low = Number(payload?.low);
+      const high = Number(payload?.high);
+      const volume = Number(payload?.volume);
+      const timestamp = Number(payload?.timestamp);
+      return {
+        ticker,
+        price,
+        currency: fallbackCurrency,
+        previousClose,
+        changeAmount: previousClose != null ? price - previousClose : scaledNumber(payload?.change, scale),
+        changePercent: Number.isFinite(Number(payload?.change_p))
+          ? roundPercent(Number(payload.change_p))
+          : (previousClose ? roundPercent(((price - previousClose) / previousClose) * 100) : null),
+        regularMarketPrice: price,
+        dayLow: Number.isFinite(low) && low > 0 ? low * scale : null,
+        dayHigh: Number.isFinite(high) && high > 0 ? high * scale : null,
+        volume: Number.isFinite(volume) && volume >= 0 ? volume : null,
+        marketState: "CLOSED",
+        exchangeName: symbol.split(".").at(-1) || null,
+        provider: "eodhd",
+        status: "LIVE",
+        asOf: Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp * 1000).toISOString() : nowIso(),
+        error: null
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("EODHD returned no live price");
 }
 
 function stooqSymbolCandidates(ticker) {
@@ -1147,7 +1279,7 @@ export async function diagnoseBatch(scope = "all") {
   };
 }
 
-export async function diagnoseQuote(tickerInput, { reset = false } = {}) {
+export async function diagnoseQuote(tickerInput, { reset = false, limited = false } = {}) {
   const ticker = normalizeTicker(tickerInput);
   if (reset) resetYahooBreaker();
   const isInternational = ticker.includes(".");
@@ -1172,19 +1304,37 @@ export async function diagnoseQuote(tickerInput, { reset = false } = {}) {
     breaker: yahooBreakerState(),
     chartBreaker: yahooChartBreakerState()
   };
-  try {
-    result.alphaVantage = summarize(await alphaVantageQuote(ticker, exchangeCurrencyGuess(ticker)));
-  } catch (error) {
-    result.alphaVantageError = String(error?.message || error);
-  }
-  try {
-    result.finnhub = summarize(await finnhubQuote(ticker, exchangeCurrencyGuess(ticker)));
-  } catch (error) {
-    result.finnhubError = String(error?.message || error);
-  }
-  if (isInternational && result.alphaVantage?.status === "LIVE") {
-    result.yahooSkipped = "Alpha Vantage returned a live international quote; Yahoo checks skipped to avoid Railway timeout.";
-    return result;
+  if (isInternational) {
+    result.limitedProvider = {
+      provider: "eodhd",
+      configured: Boolean(config.eodhdApiKey),
+      dailyLimit: config.eodhdDailyCallLimit,
+      callsRemaining: eodhdRemainingCalls()
+    };
+    if (limited) {
+      try {
+        result.eodhd = summarize(await eodhdQuote(ticker, exchangeCurrencyGuess(ticker)));
+      } catch (error) {
+        result.eodhdError = String(error?.message || error);
+      }
+      if (result.eodhd?.status === "LIVE") {
+        result.yahooSkipped = "EODHD returned a live international quote; Yahoo checks skipped.";
+        return result;
+      }
+    } else {
+      result.eodhdSkipped = "Add ?limited=1 to this diagnostic URL to spend one limited international quote call.";
+    }
+  } else {
+    try {
+      result.alphaVantage = summarize(await alphaVantageQuote(ticker, exchangeCurrencyGuess(ticker)));
+    } catch (error) {
+      result.alphaVantageError = String(error?.message || error);
+    }
+    try {
+      result.finnhub = summarize(await finnhubQuote(ticker, exchangeCurrencyGuess(ticker)));
+    } catch (error) {
+      result.finnhubError = String(error?.message || error);
+    }
   }
   try {
     result.v7 = summarize(await yahooQuoteEndpoint(ticker, "USD"));
@@ -1272,6 +1422,7 @@ async function finnhubFiftyTwoWeek(ticker) {
 
 async function enrichQuoteFromFinnhub(quote) {
   if (!quote || quote.status !== "LIVE" || !config.finnhubApiKey) return quote;
+  if (String(quote.ticker || "").includes(".")) return quote;
   const needDayRange = quote.dayLow == null || quote.dayHigh == null;
   const needFiftyTwo = quote.fiftyTwoWeekLow == null || quote.fiftyTwoWeekHigh == null;
   if (!needDayRange && !needFiftyTwo) return quote;
@@ -1292,7 +1443,7 @@ async function enrichQuoteFromFinnhub(quote) {
   return quote;
 }
 
-export async function getQuote(tickerInput, { force = false } = {}) {
+export async function getQuote(tickerInput, { force = false, manualInternational = false } = {}) {
   const ticker = normalizeTicker(tickerInput);
   const database = getDb();
   const cached = database.prepare("SELECT * FROM market_prices WHERE ticker = ?").get(ticker);
@@ -1307,18 +1458,24 @@ export async function getQuote(tickerInput, { force = false } = {}) {
     : normalizeCurrency(equity?.currency, "USD");
   const needsProfile = !equity?.name || !equity?.currency;
 
-  // Railway's IP is frequently blocked by Yahoo for exchange-suffixed tickers.
-  // When real API keys are configured, try those first for international names so
-  // .AX/.L/.CO prices do not sit behind several Yahoo timeouts.
+  // International tickers must not burn Finnhub/Alpha calls. The paid/limited
+  // international provider is reserved for the explicit "Refresh International"
+  // action only; normal dashboard refreshes use cached/free sources.
   const providers = isInternational
-    ? [
-        ...(config.alphaVantageApiKey ? [alphaVantageQuote] : []),
-        ...(config.finnhubApiKey ? [finnhubQuote] : []),
-        ...(ticker.endsWith(".AX") ? [asxQuote] : []),
-        stooqQuote,
-        yahooChartQuoteLight,
-        yahooFinanceQuote
-      ]
+    ? (manualInternational
+        ? (config.eodhdApiKey
+            ? [eodhdQuote]
+            : [
+                ...(ticker.endsWith(".AX") ? [asxQuote] : []),
+                stooqQuote,
+                yahooChartQuoteLight
+              ])
+        : [
+            ...(ticker.endsWith(".AX") ? [asxQuote] : []),
+            stooqQuote,
+            yahooChartQuoteLight,
+            yahooFinanceQuote
+          ])
     : [yahooFinanceQuote, ...(config.finnhubApiKey ? [finnhubQuote] : []), ...(config.alphaVantageApiKey ? [alphaVantageQuote] : [])];
   let lastError = null;
   let bestUnavailableQuote = null;
@@ -1398,9 +1555,9 @@ export function trackedTickers(database = getDb(), scope = "all") {
     `).all().map((row) => row.ticker);
   }
   if (scope === "intl") {
-    // International tickers only (.AX/.L/.CO etc.) - Yahoo-only, no fallback.
-    // Used by the on-demand "Refresh International" button so we can fetch just
-    // these few names with a freshly-cleared chart breaker.
+    // International/exchange-suffixed tickers only. Used by the on-demand
+    // "Refresh International" button so the limited global-market token is spent
+    // only when explicitly requested.
     return database.prepare(`
       SELECT DISTINCT ticker FROM (${held} UNION ${pulse} UNION ${alerts} UNION ${watch})
       WHERE ticker LIKE '%.%'
@@ -1474,20 +1631,20 @@ export async function refreshTrackedQuotes({ force = true, scope = "all", resetB
       results.push(await getQuote(ticker, { force }));
     }
 
-    // --- International: lightweight v8 chart only, on its own breaker, THROTTLED ---
-    // These exchanges have one close per day and no fallback, so we fetch them at
-    // most ~4x/day. The frequent background refresh skips them entirely (serving the
-    // last stored close); only the ~6h timer or an explicit "Refresh International"
-    // actually hits Yahoo. This keeps Railway's IP off Yahoo's rate-limit radar.
+    // --- International: manual only ---
+    // International names stay on cached prices during normal dashboard/background
+    // refreshes. Only the explicit "Refresh International" action spends the limited
+    // global-market provider budget. This prevents Finnhub/Alpha/EODHD calls from
+    // being consumed quietly by scheduler ticks, alert refreshes, or page loads.
     if (intlTickers.length) {
-      if (intlRefreshDue(scope)) {
+      if (scope === "intl" && intlRefreshDue(scope)) {
         lastIntlRefreshAt = Date.now();
         for (const ticker of intlTickers) {
-          // getQuote routes international tickers to the chart-only provider chain.
-          results.push(await getQuote(ticker, { force: true }));
+          results.push(await getQuote(ticker, { force: true, manualInternational: true }));
         }
       } else {
-        // Not due yet - serve the last stored price so the dashboard stays populated.
+        // Not a manual international refresh, or pressed again too quickly - serve
+        // the last stored price so the dashboard stays populated without API usage.
         for (const ticker of intlTickers) {
           const row = db.prepare("SELECT * FROM market_prices WHERE ticker = ?").get(normalizeTicker(ticker));
           if (row) results.push(quoteFromRow(row, true));
@@ -1509,6 +1666,9 @@ export function marketProviderStatus() {
   return {
     finnhubConfigured: Boolean(config.finnhubApiKey),
     alphaVantageConfigured: Boolean(config.alphaVantageApiKey),
+    eodhdConfigured: Boolean(config.eodhdApiKey),
+    eodhdDailyCallLimit: config.eodhdDailyCallLimit,
+    eodhdCallsRemaining: eodhdRemainingCalls(),
     quoteCacheSeconds: config.quoteCacheSeconds
   };
 }
