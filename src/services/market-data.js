@@ -364,7 +364,7 @@ async function alphaVantageQuote(ticker, fallbackCurrency = "USD") {
   return alphaLimiter.enqueue(async () => {
     const url = new URL("https://www.alphavantage.co/query");
     url.searchParams.set("function", "GLOBAL_QUOTE");
-    url.searchParams.set("symbol", ticker);
+    url.searchParams.set("symbol", alphaVantageSymbol(ticker));
     url.searchParams.set("apikey", config.alphaVantageApiKey);
     const payload = await fetchJson(url);
     const quote = payload?.["Global Quote"] || {};
@@ -399,6 +399,32 @@ async function alphaVantageQuote(ticker, fallbackCurrency = "USD") {
       error: null
     };
   });
+}
+
+function alphaVantageSymbol(ticker) {
+  const symbol = normalizeTicker(ticker);
+  const match = symbol.match(/^(.+)\.([A-Z0-9-]+)$/);
+  if (!match) return symbol;
+  const [, root, suffix] = match;
+  const map = {
+    AX: "AUS",
+    L: "LON",
+    CO: "CPH",
+    DE: "DEX",
+    PA: "PAR",
+    AS: "AMS",
+    MI: "MIL",
+    MC: "MAD",
+    BR: "BRU",
+    SW: "SWX",
+    ST: "STO",
+    OL: "OSL",
+    HK: "HKG",
+    TO: "TRT",
+    V: "TRV",
+    T: "TYO"
+  };
+  return map[suffix] ? `${root}.${map[suffix]}` : symbol;
 }
 
 function stooqSymbolCandidates(ticker) {
@@ -1175,6 +1201,16 @@ export async function diagnoseQuote(tickerInput, { reset = false } = {}) {
   } catch (error) {
     result.stooqError = String(error?.message || error);
   }
+  try {
+    result.finnhub = summarize(await finnhubQuote(ticker, exchangeCurrencyGuess(ticker)));
+  } catch (error) {
+    result.finnhubError = String(error?.message || error);
+  }
+  try {
+    result.alphaVantage = summarize(await alphaVantageQuote(ticker, exchangeCurrencyGuess(ticker)));
+  } catch (error) {
+    result.alphaVantageError = String(error?.message || error);
+  }
   return result;
 }
 
@@ -1272,7 +1308,8 @@ export async function getQuote(tickerInput, { force = false } = {}) {
     ? (ticker.endsWith(".AX")
         ? [yahooChartQuoteLight, yahooFinanceQuote, asxQuote, stooqQuote]
         : [yahooChartQuoteLight, yahooFinanceQuote, stooqQuote])
-    : [yahooFinanceQuote, finnhubQuote];
+    : [yahooFinanceQuote];
+  if (config.finnhubApiKey) providers.push(finnhubQuote);
   if (config.alphaVantageApiKey) providers.push(alphaVantageQuote);
   let lastError = null;
   let bestUnavailableQuote = null;
