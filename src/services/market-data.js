@@ -1150,7 +1150,10 @@ export async function diagnoseBatch(scope = "all") {
 export async function diagnoseQuote(tickerInput, { reset = false } = {}) {
   const ticker = normalizeTicker(tickerInput);
   if (reset) resetYahooBreaker();
-  const session = await getYahooSession();
+  const isInternational = ticker.includes(".");
+  const session = isInternational && config.alphaVantageApiKey
+    ? { crumb: "", cookie: "" }
+    : await getYahooSession();
   const fieldList = [
     "price", "regularMarketPrice", "preMarketPrice", "postMarketPrice", "marketState",
     "dayLow", "dayHigh", "fiftyTwoWeekLow", "fiftyTwoWeekHigh", "volume",
@@ -1169,6 +1172,20 @@ export async function diagnoseQuote(tickerInput, { reset = false } = {}) {
     breaker: yahooBreakerState(),
     chartBreaker: yahooChartBreakerState()
   };
+  try {
+    result.alphaVantage = summarize(await alphaVantageQuote(ticker, exchangeCurrencyGuess(ticker)));
+  } catch (error) {
+    result.alphaVantageError = String(error?.message || error);
+  }
+  try {
+    result.finnhub = summarize(await finnhubQuote(ticker, exchangeCurrencyGuess(ticker)));
+  } catch (error) {
+    result.finnhubError = String(error?.message || error);
+  }
+  if (isInternational && result.alphaVantage?.status === "LIVE") {
+    result.yahooSkipped = "Alpha Vantage returned a live international quote; Yahoo checks skipped to avoid Railway timeout.";
+    return result;
+  }
   try {
     result.v7 = summarize(await yahooQuoteEndpoint(ticker, "USD"));
   } catch (error) {
@@ -1200,16 +1217,6 @@ export async function diagnoseQuote(tickerInput, { reset = false } = {}) {
     result.stooq = summarize(await stooqQuote(ticker, exchangeCurrencyGuess(ticker)));
   } catch (error) {
     result.stooqError = String(error?.message || error);
-  }
-  try {
-    result.finnhub = summarize(await finnhubQuote(ticker, exchangeCurrencyGuess(ticker)));
-  } catch (error) {
-    result.finnhubError = String(error?.message || error);
-  }
-  try {
-    result.alphaVantage = summarize(await alphaVantageQuote(ticker, exchangeCurrencyGuess(ticker)));
-  } catch (error) {
-    result.alphaVantageError = String(error?.message || error);
   }
   return result;
 }
@@ -1300,17 +1307,19 @@ export async function getQuote(tickerInput, { force = false } = {}) {
     : normalizeCurrency(equity?.currency, "USD");
   const needsProfile = !equity?.name || !equity?.currency;
 
-  // International tickers use Yahoo first because Finnhub's free tier generally
-  // does not cover these exchanges. The lightweight chart path is cheapest, but
-  // some symbols/IPs intermittently fail there; fall back to the older Yahoo quote
-  // path that previously resolved .AX/.L/.CO names before trying optional providers.
+  // Railway's IP is frequently blocked by Yahoo for exchange-suffixed tickers.
+  // When real API keys are configured, try those first for international names so
+  // .AX/.L/.CO prices do not sit behind several Yahoo timeouts.
   const providers = isInternational
-    ? (ticker.endsWith(".AX")
-        ? [yahooChartQuoteLight, yahooFinanceQuote, asxQuote, stooqQuote]
-        : [yahooChartQuoteLight, yahooFinanceQuote, stooqQuote])
-    : [yahooFinanceQuote];
-  if (config.finnhubApiKey) providers.push(finnhubQuote);
-  if (config.alphaVantageApiKey) providers.push(alphaVantageQuote);
+    ? [
+        ...(config.alphaVantageApiKey ? [alphaVantageQuote] : []),
+        ...(config.finnhubApiKey ? [finnhubQuote] : []),
+        ...(ticker.endsWith(".AX") ? [asxQuote] : []),
+        stooqQuote,
+        yahooChartQuoteLight,
+        yahooFinanceQuote
+      ]
+    : [yahooFinanceQuote, ...(config.finnhubApiKey ? [finnhubQuote] : []), ...(config.alphaVantageApiKey ? [alphaVantageQuote] : [])];
   let lastError = null;
   let bestUnavailableQuote = null;
   for (const provider of providers) {
