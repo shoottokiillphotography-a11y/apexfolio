@@ -24,8 +24,25 @@ function migrate(database) {
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL,
       base_currency TEXT NOT NULL CHECK (base_currency IN ('USD','AUD','GBP')),
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      display_name TEXT,
+      password_hash TEXT,
+      role TEXT NOT NULL DEFAULT 'member',
+      updated_at TEXT,
+      last_login_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_user
+      ON user_sessions(user_id, expires_at);
 
     CREATE TABLE IF NOT EXISTS user_ai_settings (
       user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -341,6 +358,14 @@ function migrate(database) {
       PRIMARY KEY (user_id, key)
     );
   `);
+
+  ensureColumn(database, "users", "display_name", "TEXT");
+  ensureColumn(database, "users", "password_hash", "TEXT");
+  ensureColumn(database, "users", "role", "TEXT NOT NULL DEFAULT 'member'");
+  ensureColumn(database, "users", "updated_at", "TEXT");
+  ensureColumn(database, "users", "last_login_at", "TEXT");
+  database.exec("UPDATE users SET role = 'owner' WHERE id = 'primary-user' AND (role IS NULL OR role = 'member');");
+  database.exec("UPDATE users SET updated_at = COALESCE(updated_at, created_at);");
 
   ensureColumn(database, "categories", "color", "TEXT NOT NULL DEFAULT '#C9A86A'");
   ensureColumn(database, "categories", "active", "INTEGER NOT NULL DEFAULT 1");

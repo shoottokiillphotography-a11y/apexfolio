@@ -774,7 +774,13 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
     firstLotDate: firstLotRow?.firstLotDate || null
   };
 
-  const userView = { id: user.id, email: user.email, baseCurrency };
+  const userView = {
+    id: user.id,
+    email: user.email,
+    name: user.display_name || "",
+    role: user.role || "member",
+    baseCurrency
+  };
   const intelligence = buildIntelligence({
     positions: positionList,
     watchlist,

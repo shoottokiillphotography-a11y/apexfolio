@@ -50,12 +50,23 @@ import { getRules, saveRules, resetRules, DEFAULT_RULES } from "./services/rules
 import { refreshTrackedFundamentals } from "./services/fundamentals.js";
 import { portfolioPerformance, stockDetail, tickerPerformance } from "./services/performance.js";
 import { seedStrategyAlerts } from "./services/strategy-alerts.js";
+import {
+  authenticatedUser,
+  authNeedsSetup,
+  clearSessionCookie,
+  createUserAccount,
+  currentSession,
+  listUsers,
+  loginUser,
+  requireOwner,
+  setupOwner
+} from "./services/auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, "public");
 // Bump this on each backend release so /api/health and the startup log show which
 // code is actually running - the fastest way to confirm a server restart took.
-const APP_BUILD = "2026-06-20-manual-intl-eodhd";
+const APP_BUILD = "2026-06-22-login-responsive-nav";
 let stopScheduler = null;
 
 async function setSchedulerEnabled(enabled) {
@@ -170,12 +181,13 @@ function parseMultipart(buffer, contentTypeHeader) {
   return { fields, files };
 }
 
-function sendJson(res, statusCode, payload) {
+function sendJson(res, statusCode, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
-    "Cache-Control": "no-store"
+    "Cache-Control": "no-store",
+    ...extraHeaders
   });
   res.end(body);
 }
@@ -229,13 +241,14 @@ function route(method, pathname, pattern) {
 }
 
 async function handleApi(req, res, url) {
-  const user = getPrimaryUser();
-  const routes = [
+  const database = getDb();
+  const publicRoutes = [
     {
       method: "GET",
       path: "/api/health",
       handler: async () => {
-        const aiSettings = aiSettingsForUser(getDb(), user.id);
+        const user = authenticatedUser(req, database) || getPrimaryUser();
+        const aiSettings = user ? aiSettingsForUser(database, user.id) : null;
         return {
           ok: true,
           build: APP_BUILD,
@@ -246,10 +259,62 @@ async function handleApi(req, res, url) {
           aiProvider: aiSettings?.provider || "rules",
           aiModel: aiSettings?.model || null,
           schedulerEnabled: Boolean(stopScheduler),
-          baseCurrency: user.base_currency
+          baseCurrency: user?.base_currency || config.baseCurrency
         };
       }
     },
+    {
+      method: "GET",
+      path: "/api/session",
+      handler: async () => currentSession(req, database)
+    },
+    {
+      method: "POST",
+      path: "/api/auth/setup",
+      handler: async () => {
+        const result = setupOwner(await readJson(req), req, database);
+        return { __cookie: result.cookie, payload: { ok: true, user: result.user } };
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/auth/login",
+      handler: async () => {
+        const result = loginUser(await readJson(req), req, database);
+        return { __cookie: result.cookie, payload: { ok: true, user: result.user } };
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/auth/logout",
+      handler: async () => ({ __cookie: clearSessionCookie(req, database), payload: { ok: true } })
+    }
+  ];
+
+  for (const pattern of publicRoutes) {
+    const params = route(req.method, url.pathname, pattern);
+    if (params) {
+      const result = await pattern.handler(params);
+      if (result?.__cookie) {
+        sendJson(res, 200, result.payload, { "Set-Cookie": result.__cookie });
+      } else {
+        sendJson(res, 200, result);
+      }
+      return;
+    }
+  }
+
+  const user = authenticatedUser(req, database);
+  if (!user) {
+    sendJson(res, 401, {
+      error: authNeedsSetup(database) ? "Owner login setup is required" : "Login required",
+      authRequired: true,
+      needsSetup: authNeedsSetup(database)
+    });
+    return;
+  }
+
+  const routes = [
     {
       method: "GET",
       path: "/api/dashboard",
@@ -333,6 +398,22 @@ async function handleApi(req, res, url) {
       handler: async () => ({ rules: resetRules(user.id), defaults: DEFAULT_RULES })
     },
     {
+      method: "GET",
+      path: "/api/users",
+      handler: async () => {
+        requireOwner(user);
+        return { users: listUsers(database) };
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/users",
+      handler: async () => {
+        requireOwner(user);
+        return { user: createUserAccount(await readJson(req), database) };
+      }
+    },
+    {
       method: "POST",
       path: "/api/settings/base-currency",
       handler: async () => ({ baseCurrency: updateBaseCurrency(user.id, (await readJson(req)).currency) })
@@ -341,6 +422,7 @@ async function handleApi(req, res, url) {
       method: "POST",
       path: "/api/settings/finnhub-key",
       handler: async () => {
+        requireOwner(user);
         const body = await readJson(req);
         const key = String(body.key || "").trim();
         if (key.length < 8) throw new InputError("Finnhub key looks too short");
@@ -353,6 +435,7 @@ async function handleApi(req, res, url) {
       method: "POST",
       path: "/api/settings/email",
       handler: async () => {
+        requireOwner(user);
         const body = await readJsonOrForm(req);
         const provider = String(body.provider || body.emailProvider || config.emailProvider || "brevo").trim().toLowerCase();
         if (!["brevo", "sendgrid"].includes(provider)) throw new InputError("Email provider must be Brevo or SendGrid");
@@ -397,6 +480,7 @@ async function handleApi(req, res, url) {
       method: "POST",
       path: "/api/settings/openai-key",
       handler: async () => {
+        requireOwner(user);
         const settings = saveAiSettings(user.id, { ...(await readJson(req)), provider: "openai" });
         return { ok: true, aiConfigured: true, aiProvider: settings.provider, aiModel: settings.model };
       }
@@ -405,6 +489,7 @@ async function handleApi(req, res, url) {
       method: "POST",
       path: "/api/settings/ai",
       handler: async () => {
+        requireOwner(user);
         const settings = saveAiSettings(user.id, await readJson(req));
         return { ok: true, aiConfigured: true, aiProvider: settings.provider, aiModel: settings.model };
       }
@@ -412,7 +497,10 @@ async function handleApi(req, res, url) {
     {
       method: "POST",
       path: "/api/settings/scheduler",
-      handler: async () => setSchedulerEnabled((await readJson(req)).enabled)
+      handler: async () => {
+        requireOwner(user);
+        return setSchedulerEnabled((await readJson(req)).enabled);
+      }
     },
     {
       method: "POST",
@@ -426,22 +514,32 @@ async function handleApi(req, res, url) {
     {
       method: "POST",
       path: "/api/categories",
-      handler: async () => createCategory(await readJson(req))
+      handler: async () => {
+        requireOwner(user);
+        return createCategory(await readJson(req));
+      }
     },
     {
       method: "PUT",
       path: "/api/categories",
-      handler: async () => saveCategoryChanges(await readJson(req))
+      handler: async () => {
+        requireOwner(user);
+        return saveCategoryChanges(await readJson(req));
+      }
     },
     {
       method: "POST",
       path: "/api/categories/reset-defaults",
-      handler: async () => resetDefaultPortfolioGroups(getDb())
+      handler: async () => {
+        requireOwner(user);
+        return resetDefaultPortfolioGroups(getDb());
+      }
     },
     {
       method: "PATCH",
       path: "/api/categories/:categoryId",
       handler: async ({ categoryId }) => {
+        requireOwner(user);
         const body = await readJson(req);
         if (Object.keys(body).length === 1 && Object.hasOwn(body, "targetPercent")) {
           updateCategoryTarget(categoryId, body.targetPercent);
@@ -453,12 +551,16 @@ async function handleApi(req, res, url) {
     {
       method: "DELETE",
       path: "/api/categories/:categoryId",
-      handler: async ({ categoryId }) => deleteCategory(categoryId, await readJson(req))
+      handler: async ({ categoryId }) => {
+        requireOwner(user);
+        return deleteCategory(categoryId, await readJson(req));
+      }
     },
     {
       method: "PATCH",
       path: "/api/equities/:ticker/category",
       handler: async ({ ticker }) => {
+        requireOwner(user);
         const body = await readJson(req);
         updateEquityCategory(ticker, body.categoryId);
         return { ok: true };

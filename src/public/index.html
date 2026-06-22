@@ -11,6 +11,28 @@
     <link rel="stylesheet" href="/styles.css?v=perf-chart-1">
   </head>
   <body>
+    <section class="auth-gate" id="authGate" hidden>
+      <form class="auth-card" id="authForm">
+        <img class="auth-logo" src="/logo.png" alt="ApexFolio" width="52" height="52">
+        <p class="eyebrow" id="authEyebrow">Portfolio Intelligence</p>
+        <h1 id="authTitle">Sign in to ApexFolio</h1>
+        <p class="muted" id="authDescription">Protect your portfolio before continuing.</p>
+        <label class="field" id="authNameField" hidden>
+          <span>Name</span>
+          <input name="name" autocomplete="name" placeholder="Your name">
+        </label>
+        <label class="field">
+          <span>Email</span>
+          <input name="email" type="email" autocomplete="email" required>
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input name="password" type="password" autocomplete="current-password" required minlength="8">
+        </label>
+        <button class="button primary auth-submit" id="authSubmit" type="submit">Sign In</button>
+      </form>
+    </section>
+
     <div class="app-shell">
       <header class="top-nav" aria-label="Portfolio workspace">
         <div class="top-nav-brand">
@@ -85,6 +107,8 @@
         <div class="top-nav-status">
           <span class="status-dot"></span>
           <span>Live workspace</span>
+          <span class="top-user-email" id="topUserEmail"></span>
+          <button class="top-logout" data-action="logout" type="button">Log out</button>
         </div>
       </header>
 
@@ -130,7 +154,7 @@
             </div>
             <div class="button-row">
               <button class="button secondary" data-action="toggleAllocation" type="button">Hide</button>
-              <button class="button primary" data-action="openGroupManager" type="button">Edit Groups</button>
+              <button class="button primary owner-only" data-action="openGroupManager" type="button">Edit Groups</button>
             </div>
           </div>
           <div id="dashboardAllocationSummary" class="collapse-summary"></div>
@@ -547,7 +571,23 @@
             <p class="import-note" id="importReplaceNote">Replace rebuilds portfolio lots, sales, dividends, and cash. Watchlists stay separate.</p>
           </div>
           <div class="settings-grid">
-            <form class="settings-card" id="providerKeyForm">
+            <form class="settings-card owner-only" id="addUserForm">
+              <div>
+                <strong>Users</strong>
+                <span>Add a separate login for another person</span>
+              </div>
+              <input name="name" placeholder="Name">
+              <input name="email" type="email" placeholder="Email" autocomplete="off" required>
+              <input name="password" type="password" placeholder="Temporary password" autocomplete="new-password" required minlength="8">
+              <select name="baseCurrency">
+                <option value="AUD">AUD</option>
+                <option value="USD">USD</option>
+                <option value="GBP">GBP</option>
+              </select>
+              <button class="button primary" type="submit">Add User</button>
+              <div id="usersTable" class="mini-user-list"></div>
+            </form>
+            <form class="settings-card owner-only" id="providerKeyForm">
               <div>
                 <strong>Live Prices</strong>
                 <span>Finnhub market data key</span>
@@ -555,7 +595,7 @@
               <input name="key" type="password" placeholder="Finnhub API key" autocomplete="off" required>
               <button class="button primary" type="submit">Save Key</button>
             </form>
-            <form class="settings-card" id="aiSettingsForm">
+            <form class="settings-card owner-only" id="aiSettingsForm">
               <div>
                 <strong>AI Research</strong>
                 <span>OpenAI or Gemini memo provider</span>
@@ -568,7 +608,7 @@
               <input name="model" id="aiModel" placeholder="Model" value="gpt-5-mini">
               <button class="button secondary" type="submit">Save AI</button>
             </form>
-            <div class="settings-card">
+            <div class="settings-card owner-only">
               <div>
                 <strong>Automation</strong>
                 <span id="schedulerStatus">Scheduler status</span>
@@ -587,14 +627,14 @@
         </section>
 
         <section class="two-column operations-settings-grid">
-          <div class="band" id="groupSettingsBand">
+          <div class="band owner-only" id="groupSettingsBand">
             <div class="band-header">
               <div>
                 <p class="eyebrow">Allocation Groups</p>
                 <h2>Group Settings</h2>
                 <p class="muted" id="groupTargetWarning"></p>
               </div>
-              <button class="button primary" data-action="openGroupManager" type="button">Open Group Manager</button>
+              <button class="button primary owner-only" data-action="openGroupManager" type="button">Open Group Manager</button>
             </div>
             <div id="groupSettingsTable" class="compact-table"></div>
           </div>
@@ -629,7 +669,7 @@
         </section>
 
         <section class="two-column">
-          <div class="band">
+          <div class="band owner-only">
             <div class="band-header">
               <h2>Notifications</h2>
               <button class="button" id="retryNotifications" type="button">Retry</button>

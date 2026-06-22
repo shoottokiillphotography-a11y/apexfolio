@@ -157,6 +157,8 @@ const initialPerformanceMode = ["withCash", "withoutCash"].includes(savedPerform
   : "withCash";
 
 const state = {
+  session: null,
+  authMode: "login",
   dashboard: cachedDashboardSnapshot.dashboard || null,
   categories: cachedDashboardSnapshot.categories || [],
   groupEditor: null,
@@ -1025,9 +1027,84 @@ async function api(path, options = {}) {
     const error = new Error(payload.error || `Request failed: ${response.status}`);
     error.status = response.status;
     error.details = payload.details || null;
+    if (response.status === 401 && !options.skipAuthRedirect) {
+      showAuthGate(payload.needsSetup ? "setup" : "login", payload.error);
+    }
     throw error;
   }
   return payload;
+}
+
+function showAuthGate(mode = "login", message = "") {
+  state.authMode = mode;
+  const gate = $("#authGate");
+  const title = $("#authTitle");
+  const eyebrow = $("#authEyebrow");
+  const description = $("#authDescription");
+  const nameField = $("#authNameField");
+  const submit = $("#authSubmit");
+  if (!gate) return;
+  gate.hidden = false;
+  document.body.classList.add("auth-active");
+  if (mode === "setup") {
+    eyebrow.textContent = "Owner Setup";
+    title.textContent = "Secure ApexFolio";
+    description.textContent = message || "Create your owner login. Your existing portfolio data stays attached to this account.";
+    nameField.hidden = false;
+    submit.textContent = "Create Owner Login";
+    const emailInput = gate.querySelector('input[name="email"]');
+    if (emailInput && !emailInput.value && state.dashboard?.user?.email) emailInput.value = state.dashboard.user.email;
+  } else {
+    eyebrow.textContent = "Portfolio Intelligence";
+    title.textContent = "Sign in to ApexFolio";
+    description.textContent = message || "Enter your email and password to continue.";
+    nameField.hidden = true;
+    submit.textContent = "Sign In";
+  }
+}
+
+function hideAuthGate() {
+  const gate = $("#authGate");
+  if (gate) gate.hidden = true;
+  document.body.classList.remove("auth-active");
+}
+
+async function loadSession() {
+  const session = await api("/api/session", { skipAuthRedirect: true });
+  state.session = session;
+  if (!session.authenticated) {
+    showAuthGate(session.needsSetup ? "setup" : "login");
+    return false;
+  }
+  hideAuthGate();
+  renderAccountState();
+  return true;
+}
+
+function renderAccountState() {
+  const user = state.session?.user || state.dashboard?.user;
+  const emailNode = $("#topUserEmail");
+  if (emailNode) emailNode.textContent = user?.email || "";
+  const isOwner = (user?.role || "member") === "owner";
+  document.querySelectorAll(".owner-only").forEach((node) => {
+    node.hidden = !isOwner;
+  });
+  if (isOwner) loadUsers().catch(() => undefined);
+}
+
+async function loadUsers() {
+  const table = $("#usersTable");
+  if (!table) return;
+  const payload = await api("/api/users");
+  table.innerHTML = (payload.users || []).map((user) => `
+    <div class="mini-user-row">
+      <div>
+        <strong>${escapeHtml(user.name || user.email)}</strong>
+        <span>${escapeHtml(user.email)} · ${escapeHtml(user.role || "member")}</span>
+      </div>
+      <span>${escapeHtml(user.baseCurrency || "")}</span>
+    </div>
+  `).join("");
 }
 
 async function loadDashboard(refresh = false) {
@@ -1044,8 +1121,10 @@ async function loadDashboard(refresh = false) {
     detectPriceMoves(dashboard);
     state.dashboard = dashboard;
     state.categories = mergeCategories(categoryPayload?.categories || [], state.dashboard.allocation || []);
+    if (state.session?.user && dashboard.user) state.session.user = { ...state.session.user, ...dashboard.user };
     saveCachedDashboardSnapshot();
     render();
+    renderAccountState();
     if (!state.portfolioPerformance) loadPortfolioPerformance().catch(() => undefined);
     newsPromise.then((newsPayload) => {
       state.news = newsPayload;
@@ -4501,6 +4580,31 @@ document.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
   try {
+    if (form.id === "authForm") {
+      const body = Object.fromEntries(new FormData(form));
+      const endpoint = state.authMode === "setup" ? "/api/auth/setup" : "/api/auth/login";
+      await api(endpoint, {
+        method: "POST",
+        body: JSON.stringify(body),
+        skipAuthRedirect: true
+      });
+      await loadSession();
+      await loadDashboard(true);
+      configureAutoPrices();
+      toast(state.authMode === "setup" ? "Owner login created" : "Signed in");
+      return;
+    }
+    if (form.id === "addUserForm") {
+      const body = Object.fromEntries(new FormData(form));
+      await api("/api/users", {
+        method: "POST",
+        body: JSON.stringify(body)
+      });
+      form.reset();
+      await loadUsers();
+      toast("User added");
+      return;
+    }
     if (form.id === "uploadForm") {
       const data = new FormData(form);
       const kind = form.elements.kind.value;
@@ -4892,6 +4996,13 @@ document.addEventListener("click", async (event) => {
   if (!target) return;
   const action = target.dataset.action || target.id;
   try {
+    if (action === "logout") {
+      await api("/api/auth/logout", { method: "POST", skipAuthRedirect: true });
+      state.session = null;
+      showAuthGate("login", "Signed out. Sign in again to continue.");
+      toast("Signed out");
+      return;
+    }
     if (target.dataset.symbolPick) {
       const input = $("#watchlistTickerInput");
       if (input) input.value = target.dataset.symbolPick;
@@ -5387,15 +5498,21 @@ window.addEventListener("popstate", () => {
   if (route.view === "alerts") renderAlerts();
 });
 
-if (state.dashboard) {
-  render();
+async function boot() {
+  const authenticated = await loadSession();
+  if (!authenticated) return;
+  if (state.dashboard) {
+    render();
+    renderAccountState();
+    updateImportControls();
+  }
+  await loadDashboard();
   updateImportControls();
+  setView(state.currentView, { scroll: false, updateRoute: false, alertTab: state.alertTab, routeTab: state.routeTab });
+  configureAutoPrices();
 }
 
-loadDashboard()
-  .then(() => {
-    updateImportControls();
-    setView(state.currentView, { scroll: false, updateRoute: false, alertTab: state.alertTab, routeTab: state.routeTab });
-    configureAutoPrices();
-  })
-  .catch((error) => toastError(error));
+boot().catch((error) => {
+  if (error.status === 401) return;
+  toastError(error);
+});
