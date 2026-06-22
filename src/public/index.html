@@ -8,7 +8,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
     <link rel="apple-touch-icon" href="/favicon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=signup-1">
+    <link rel="stylesheet" href="/styles.css?v=alert-command-1">
   </head>
   <body>
     <section class="auth-gate" id="authGate" hidden>
@@ -540,6 +540,22 @@
               <button class="button secondary" data-action="enableDesktopAlerts" type="button">Desktop Alerts</button>
             </div>
           </div>
+          <form class="alert-command-box" id="alertCommandForm">
+            <div class="alert-command-head">
+              <div>
+                <p class="eyebrow">Command Box</p>
+                <h3>Create alerts in plain English</h3>
+                <p class="muted">No external AI. The app previews every alert before saving.</p>
+              </div>
+              <button class="button primary" type="submit">Preview Alerts</button>
+            </div>
+            <textarea id="alertCommandInput" name="command" rows="3" placeholder="Create alerts using natural language, e.g. 'Micron above $150 trim, below $120 review, below $100 critical re-analysis'"></textarea>
+            <div class="alert-command-footer">
+              <div class="command-history" id="alertCommandHistory"></div>
+              <button class="button secondary" data-action="clearAlertCommand" type="button">Clear</button>
+            </div>
+          </form>
+          <div id="alertCommandPreview" class="alert-command-preview"></div>
           <div class="alerts-executed-block" id="alertsExecutedBlock">
             <div class="section-title">Executed alerts</div>
             <div id="alertsExecuted" class="executed-list"></div>
@@ -1070,6 +1086,6 @@
       </div>
     </dialog>
 
-    <script src="/app.js?v=signup-1" type="module"></script>
+    <script src="/app.js?v=alert-command-1" type="module"></script>
   </body>
 </html>

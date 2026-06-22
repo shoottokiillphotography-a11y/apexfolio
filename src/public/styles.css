@@ -4071,6 +4071,226 @@ dialog::backdrop {
 }
 
 /* Alerts page: executed box + portfolio overview */
+.alert-command-box {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 22px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 20px;
+  background:
+    linear-gradient(135deg, rgba(201, 168, 106, 0.07), transparent 42%),
+    var(--card-elevated);
+}
+
+.alert-command-head,
+.alert-command-footer,
+.command-preview-head,
+.command-preview-actions,
+.command-card-top,
+.command-card-meta,
+.command-card-actions,
+.command-history {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.alert-command-head,
+.command-preview-head,
+.command-card-top {
+  justify-content: space-between;
+}
+
+.alert-command-head h3,
+.command-preview-head h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.alert-command-box textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-2);
+  color: var(--text);
+  padding: 14px 16px;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.alert-command-box textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.alert-command-footer {
+  justify-content: space-between;
+}
+
+.command-history {
+  flex: 1;
+  min-width: 240px;
+}
+
+.command-history-label {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.command-history button {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alert-command-preview {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+
+.command-preview-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--card);
+}
+
+.command-preview-list {
+  display: grid;
+  gap: 12px;
+}
+
+.command-alert-card {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  background: var(--bg-2);
+}
+
+.command-alert-card.has-error {
+  border-color: rgba(255, 90, 103, 0.5);
+}
+
+.command-alert-card.has-duplicate {
+  border-color: rgba(255, 181, 71, 0.46);
+}
+
+.command-card-title {
+  display: grid;
+  gap: 3px;
+}
+
+.command-card-title strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.command-card-title span,
+.command-card-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.command-card-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.command-card-grid .wide {
+  grid-column: span 2;
+}
+
+.command-card-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.command-card-grid label span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.command-card-grid input,
+.command-card-grid select,
+.command-card-grid textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 10px 11px;
+  font: inherit;
+}
+
+.command-card-grid textarea {
+  min-height: 44px;
+  resize: vertical;
+}
+
+.command-card-errors {
+  display: grid;
+  gap: 5px;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.command-duplicate {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 181, 71, 0.36);
+  border-radius: 12px;
+  background: rgba(255, 181, 71, 0.08);
+  color: var(--warning);
+  font-size: 13px;
+}
+
+.command-card-actions {
+  justify-content: flex-end;
+}
+
+@media (max-width: 1020px) {
+  .command-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .alert-command-head,
+  .alert-command-footer,
+  .command-preview-head,
+  .command-preview-actions,
+  .command-card-top,
+  .command-card-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .command-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .command-card-grid .wide {
+    grid-column: auto;
+  }
+}
+
 .alerts-executed-block,
 .alerts-portfolio-block {
   margin-bottom: 22px;

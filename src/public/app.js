@@ -1,3 +1,5 @@
+import { ACTION_OPTIONS, alertTypeForAction, parseAlertCommand, validateParsedAlert } from "./alert-command-parser.js";
+
 function loadHoldingsView() {
   try {
     return JSON.parse(localStorage.getItem("holdingsView") || "{}");
@@ -197,7 +199,9 @@ const state = {
   priceMoves: new Map(),
   marketPulseQuotes: {},
   marketPulseQuotesLoading: new Set(),
-  marketPulseAutocompleteIndex: 0
+  marketPulseAutocompleteIndex: 0,
+  alertCommandDrafts: [],
+  lastAlertCommandText: ""
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -3643,10 +3647,381 @@ function renderAlertBanner() {
   `;
 }
 
+function alertCommandHistory() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("alertCommandHistory") || "[]");
+    return Array.isArray(parsed) ? parsed.filter(Boolean).slice(0, 6) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveAlertCommandHistory(command) {
+  const clean = String(command || "").trim();
+  if (!clean) return;
+  const history = [clean, ...alertCommandHistory().filter((item) => item !== clean)].slice(0, 6);
+  localStorage.setItem("alertCommandHistory", JSON.stringify(history));
+}
+
+function alertCommandSecurities() {
+  const securities = new Map();
+  const upsert = (ticker, data) => {
+    const normalized = String(ticker || "").trim().toUpperCase();
+    if (!normalized) return;
+    const existing = securities.get(normalized) || {};
+    securities.set(normalized, { ...existing, ...data, ticker: normalized });
+  };
+  for (const position of state.dashboard?.positions || []) {
+    upsert(position.ticker, {
+      name: position.name || position.companyName || position.equityName || position.ticker,
+      group: categoryNameFor(position),
+      groupId: position.categoryId || "",
+      currency: position.price?.currency || position.lots?.[0]?.purchaseCurrency || state.dashboard?.user?.baseCurrency || "USD",
+      currentPrice: position.price?.price,
+      source: "Portfolio"
+    });
+  }
+  for (const item of state.dashboard?.watchlist || []) {
+    upsert(item.ticker, {
+      name: item.name || item.companyName || item.equityName || item.ticker,
+      group: item.categoryName || item.watchlistName || "Watchlist",
+      groupId: item.categoryId || "",
+      currency: item.price?.currency || item.currency || state.dashboard?.user?.baseCurrency || "USD",
+      currentPrice: item.price?.price,
+      source: securities.has(String(item.ticker || "").toUpperCase()) ? "Portfolio + Watchlist" : "Watchlist"
+    });
+  }
+  for (const alert of state.dashboard?.alerts || []) {
+    upsert(alert.ticker, {
+      name: alert.companyName || alert.company_name || alert.equityName || alert.ticker,
+      group: alert.strategyGroup || alert.strategy_group || "Alerts",
+      currency: alert.currentCurrency || alert.currency || state.dashboard?.user?.baseCurrency || "USD",
+      currentPrice: alert.currentPrice,
+      source: securities.has(String(alert.ticker || "").toUpperCase()) ? securities.get(String(alert.ticker || "").toUpperCase()).source : "Alerts"
+    });
+  }
+  return [...securities.values()];
+}
+
+function duplicateAlertForDraft(draft) {
+  return (state.dashboard?.alerts || []).find((alert) => {
+    const active = alert.active !== false && alert.active !== 0 && !alert.archived_at;
+    const price = Number(alert.threshold_price ?? alert.thresholdPrice ?? alert.targetPrice);
+    const labelText = String(`${alert.label || ""} ${alert.note || ""} ${alert.alert_type || ""}`).toLowerCase();
+    const sameAction = !draft.action || labelText.includes(String(draft.action).toLowerCase()) || String(alert.alert_type || "").toUpperCase() === draft.alertType;
+    return active
+      && String(alert.ticker || "").toUpperCase() === String(draft.ticker || "").toUpperCase()
+      && String(alert.direction || "").toUpperCase() === String(draft.direction || "").toUpperCase()
+      && Number.isFinite(price)
+      && Math.abs(price - Number(draft.targetPrice)) < 0.0001
+      && sameAction;
+  });
+}
+
+function refreshAlertCommandDraft(draft) {
+  const security = alertCommandSecurities().find((item) => item.ticker === String(draft.ticker || "").toUpperCase());
+  if (security) {
+    draft.ticker = security.ticker;
+    draft.companyName ||= security.name || "";
+    draft.group ||= security.group || "Unassigned";
+    draft.groupId ||= security.groupId || "";
+    draft.currency ||= security.currency || state.dashboard?.user?.baseCurrency || "USD";
+  }
+  draft.alertType = alertTypeForAction(draft.action);
+  draft.errors = validateParsedAlert(draft, MARKET_CURRENCIES);
+  const duplicate = duplicateAlertForDraft(draft);
+  draft.duplicateId = duplicate?.id || "";
+  draft.duplicateMessage = duplicate
+    ? `An active ${draft.ticker} alert already exists ${draft.direction === "ABOVE" ? "at or above" : "at or below"} ${draft.currency} ${draft.targetPrice}.`
+    : "";
+  if (!draft.duplicatePolicy) draft.duplicatePolicy = "skip";
+}
+
+function parseAlertCommandFromForm() {
+  const input = $("#alertCommandInput");
+  const command = String(input?.value || "").trim();
+  const result = parseAlertCommand(command, {
+    securities: alertCommandSecurities(),
+    existingAlerts: state.dashboard?.alerts || [],
+    currencies: MARKET_CURRENCIES,
+    defaultCurrency: state.dashboard?.user?.baseCurrency || "USD"
+  });
+  state.lastAlertCommandText = command;
+  state.alertCommandDrafts = result.alerts || [];
+  for (const draft of state.alertCommandDrafts) refreshAlertCommandDraft(draft);
+  renderAlertCommandPreview(result.errors || []);
+  if (result.errors?.length) toast(result.errors[0]);
+  else toast(`${state.alertCommandDrafts.length} alert${state.alertCommandDrafts.length === 1 ? "" : "s"} ready to review`);
+}
+
+function renderAlertCommandHistory() {
+  const node = $("#alertCommandHistory");
+  if (!node) return;
+  const history = alertCommandHistory();
+  node.innerHTML = history.length
+    ? `<span class="command-history-label">Recent</span>${history.map((item) => `
+        <button class="button secondary" data-alert-command-history="${escapeHtml(item)}" type="button" title="${escapeHtml(item)}">${escapeHtml(item)}</button>
+      `).join("")}`
+    : `<span class="muted">Recent commands will appear here after saving.</span>`;
+}
+
+function priorityChoice(draft) {
+  return draft.priorityLabel === "Critical" ? "critical" : String(draft.priority || "medium");
+}
+
+function groupCommandOptions(selected = "") {
+  const names = new Set((state.categories || []).filter((category) => isActiveGroup(category)).map((category) => category.name));
+  if (selected) names.add(selected);
+  if (!names.size) names.add("Unassigned");
+  return [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })).map((name) => `
+    <option value="${escapeHtml(name)}" ${name === selected ? "selected" : ""}>${escapeHtml(name)}</option>
+  `).join("");
+}
+
+function tickerFieldHtml(draft) {
+  if (draft.candidateOptions?.length > 1) {
+    return `
+      <select data-alert-command-id="${draft.id}" data-alert-command-field="ticker" aria-label="Choose ticker">
+        <option value="">Choose ticker</option>
+        ${draft.candidateOptions.map((option) => `
+          <option value="${escapeHtml(option.ticker)}" ${option.ticker === draft.ticker ? "selected" : ""}>${escapeHtml(option.ticker)} - ${escapeHtml(option.name || option.group || "")}</option>
+        `).join("")}
+      </select>
+    `;
+  }
+  return `<input data-alert-command-id="${draft.id}" data-alert-command-field="ticker" value="${escapeHtml(draft.ticker || "")}" placeholder="Ticker">`;
+}
+
+function alertCommandCard(draft, index) {
+  const errors = draft.errors || [];
+  const duplicate = draft.duplicateMessage;
+  const title = draft.ticker ? `${draft.ticker} ${draft.companyName ? `- ${draft.companyName}` : ""}` : "Choose ticker";
+  return `
+    <div class="command-alert-card ${errors.length ? "has-error" : ""} ${duplicate ? "has-duplicate" : ""}" data-alert-command-card="${escapeHtml(draft.id)}">
+      <div class="command-card-top">
+        <div class="command-card-title">
+          <strong>${index + 1}. ${escapeHtml(title)}</strong>
+          <span>${escapeHtml(draft.source || "Command")} ${draft.directionInferred ? " | Direction inferred from live price" : ""}</span>
+        </div>
+        <div class="command-card-actions">
+          <button class="button secondary" data-action="focusAlertCommandDraft" data-alert-command-id="${escapeHtml(draft.id)}" type="button">Edit</button>
+          <button class="button danger ghost" data-action="removeAlertCommandDraft" data-alert-command-id="${escapeHtml(draft.id)}" type="button">Remove</button>
+        </div>
+      </div>
+      <div class="command-card-grid">
+        <label>
+          <span>Company / Ticker</span>
+          ${tickerFieldHtml(draft)}
+        </label>
+        <label>
+          <span>Target price</span>
+          <input data-alert-command-id="${draft.id}" data-alert-command-field="targetPrice" type="number" min="0" step="0.01" value="${escapeHtml(draft.targetPrice ?? "")}">
+        </label>
+        <label>
+          <span>Currency</span>
+          <select data-alert-command-id="${draft.id}" data-alert-command-field="currency">
+            ${MARKET_CURRENCIES.map((currency) => `<option value="${currency}" ${currency === draft.currency ? "selected" : ""}>${currency}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          <span>Direction</span>
+          <select data-alert-command-id="${draft.id}" data-alert-command-field="direction">
+            <option value="" ${!draft.direction ? "selected" : ""}>Choose</option>
+            <option value="ABOVE" ${draft.direction === "ABOVE" ? "selected" : ""}>Above / at or above</option>
+            <option value="BELOW" ${draft.direction === "BELOW" ? "selected" : ""}>Below / at or below</option>
+          </select>
+        </label>
+        <label>
+          <span>Priority</span>
+          <select data-alert-command-id="${draft.id}" data-alert-command-field="priorityChoice">
+            <option value="low" ${priorityChoice(draft) === "low" ? "selected" : ""}>Low</option>
+            <option value="medium" ${priorityChoice(draft) === "medium" ? "selected" : ""}>Medium</option>
+            <option value="high" ${priorityChoice(draft) === "high" ? "selected" : ""}>High</option>
+            <option value="critical" ${priorityChoice(draft) === "critical" ? "selected" : ""}>Critical</option>
+          </select>
+        </label>
+        <label>
+          <span>Action</span>
+          <select data-alert-command-id="${draft.id}" data-alert-command-field="action">
+            ${ACTION_OPTIONS.map((action) => `<option value="${escapeHtml(action)}" ${action === draft.action ? "selected" : ""}>${escapeHtml(action)}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          <span>Group</span>
+          <select data-alert-command-id="${draft.id}" data-alert-command-field="group">
+            ${groupCommandOptions(draft.group)}
+          </select>
+        </label>
+        ${duplicate ? `
+          <label>
+            <span>Duplicate</span>
+            <select data-alert-command-id="${draft.id}" data-alert-command-field="duplicatePolicy">
+              <option value="skip" ${draft.duplicatePolicy === "skip" ? "selected" : ""}>Skip duplicate</option>
+              <option value="update" ${draft.duplicatePolicy === "update" ? "selected" : ""}>Update existing</option>
+              <option value="save" ${draft.duplicatePolicy === "save" ? "selected" : ""}>Save anyway</option>
+            </select>
+          </label>
+        ` : ""}
+        <label class="wide">
+          <span>Observation</span>
+          <textarea data-alert-command-id="${draft.id}" data-alert-command-field="observation" placeholder="Reason, thesis check, or risk warning">${escapeHtml(draft.observation || "")}</textarea>
+        </label>
+      </div>
+      ${duplicate ? `<div class="command-duplicate">${escapeHtml(duplicate)}</div>` : ""}
+      ${errors.length ? `<div class="command-card-errors">${errors.map((error) => `<span>${escapeHtml(error)}</span>`).join("")}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderAlertCommandPreview(generalErrors = []) {
+  const node = $("#alertCommandPreview");
+  if (!node) return;
+  renderAlertCommandHistory();
+  const drafts = state.alertCommandDrafts || [];
+  if (!drafts.length && !generalErrors.length) {
+    node.innerHTML = "";
+    return;
+  }
+  if (generalErrors.length) {
+    node.innerHTML = `
+      <div class="command-preview-panel">
+        <div class="command-preview-head">
+          <div>
+            <p class="eyebrow">Preview</p>
+            <h3>Needs more detail</h3>
+          </div>
+          <button class="button secondary" data-action="cancelAlertCommand" type="button">Cancel</button>
+        </div>
+        <div class="command-card-errors">${generalErrors.map((error) => `<span>${escapeHtml(error)}</span>`).join("")}</div>
+      </div>
+    `;
+    return;
+  }
+  const invalid = drafts.some((draft) => draft.errors?.length);
+  node.innerHTML = `
+    <div class="command-preview-panel">
+      <div class="command-preview-head">
+        <div>
+          <p class="eyebrow">Parsed Preview</p>
+          <h3>${drafts.length} alert${drafts.length === 1 ? "" : "s"} ready for review</h3>
+          <p class="muted">Edit any field below. Nothing is saved until you press Save all alerts.</p>
+        </div>
+        <div class="command-preview-actions">
+          <button class="button secondary" data-action="cancelAlertCommand" type="button">Cancel</button>
+          <button class="button primary" data-action="saveAlertCommandDrafts" type="button" ${invalid ? "disabled" : ""}>Save all alerts</button>
+        </div>
+      </div>
+      <div class="command-preview-list">
+        ${drafts.map(alertCommandCard).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function updateAlertCommandDraft(id, field, value, { render = true } = {}) {
+  const draft = state.alertCommandDrafts.find((item) => item.id === id);
+  if (!draft) return;
+  if (field === "priorityChoice") {
+    draft.priority = value === "critical" ? "high" : value;
+    draft.priorityLabel = value === "critical" ? "Critical" : value.charAt(0).toUpperCase() + value.slice(1);
+  } else if (field === "targetPrice") {
+    draft.targetPrice = Number(value);
+  } else if (field === "ticker") {
+    draft.ticker = String(value || "").trim().toUpperCase();
+    const security = alertCommandSecurities().find((item) => item.ticker === draft.ticker);
+    if (security) {
+      draft.companyName = security.name || draft.companyName || "";
+      draft.group = security.group || draft.group || "Unassigned";
+      draft.groupId = security.groupId || draft.groupId || "";
+      draft.currency = security.currency || draft.currency || state.dashboard?.user?.baseCurrency || "USD";
+      draft.source = security.source || draft.source || "";
+    }
+  } else {
+    draft[field] = value;
+  }
+  refreshAlertCommandDraft(draft);
+  if (render) renderAlertCommandPreview();
+}
+
+function alertCommandPayload(draft) {
+  const priorityLabel = draft.priorityLabel === "Critical" ? "Critical " : "";
+  const action = draft.action || "Review";
+  const note = [draft.observation, draft.directionInferred ? "Direction inferred from current market price." : ""]
+    .filter(Boolean)
+    .join(" ");
+  return {
+    ticker: String(draft.ticker || "").trim().toUpperCase(),
+    scope: "EQUITY",
+    direction: draft.direction,
+    thresholdPrice: Number(draft.targetPrice),
+    currency: draft.currency,
+    alertType: draft.alertType || alertTypeForAction(action),
+    priority: draft.priority === "critical" ? "high" : draft.priority,
+    label: `${priorityLabel}${action}`,
+    note,
+    companyName: draft.companyName || "",
+    group: draft.group || "",
+    source: "command_box"
+  };
+}
+
+async function saveAlertCommandDrafts() {
+  const drafts = state.alertCommandDrafts || [];
+  if (!drafts.length) {
+    toast("No parsed alerts to save");
+    return;
+  }
+  for (const draft of drafts) refreshAlertCommandDraft(draft);
+  const invalid = drafts.find((draft) => draft.errors?.length);
+  if (invalid) {
+    renderAlertCommandPreview();
+    toast(invalid.errors[0]);
+    return;
+  }
+  let saved = 0;
+  let skipped = 0;
+  let updated = 0;
+  for (const draft of drafts) {
+    const duplicate = duplicateAlertForDraft(draft);
+    if (duplicate && draft.duplicatePolicy === "skip") {
+      skipped += 1;
+      continue;
+    }
+    const payload = alertCommandPayload(draft);
+    if (duplicate && draft.duplicatePolicy === "update") {
+      await api(`/api/alerts/${encodeURIComponent(duplicate.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload)
+      });
+      updated += 1;
+    } else {
+      await api("/api/alerts", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      saved += 1;
+    }
+  }
+  saveAlertCommandHistory(state.lastAlertCommandText || $("#alertCommandInput")?.value || "");
+  state.alertCommandDrafts = [];
+  state.lastAlertCommandText = "";
+  const input = $("#alertCommandInput");
+  if (input) input.value = "";
+  await loadDashboard();
+  renderAlerts();
+  const parts = [];
+  if (saved) parts.push(`${saved} created`);
+  if (updated) parts.push(`${updated} updated`);
+  if (skipped) parts.push(`${skipped} skipped`);
+  toast(parts.length ? `Alerts saved: ${parts.join(", ")}` : "No alerts changed");
+}
+
 function renderAlerts() {
   const alerts = state.dashboard.alerts || [];
   renderAlertBanner();
   renderAlertsTop(alerts);
+  renderAlertCommandHistory();
+  renderAlertCommandPreview();
   const tabsNode = $("#alertTabs");
   if (!alerts.length) {
     if (tabsNode) tabsNode.innerHTML = "";
@@ -4659,6 +5034,10 @@ document.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
   try {
+    if (form.id === "alertCommandForm") {
+      parseAlertCommandFromForm();
+      return;
+    }
     if (form.id === "authForm") {
       const body = Object.fromEntries(new FormData(form));
       const endpoint = state.authMode === "setup"
@@ -4904,6 +5283,10 @@ function hideWatchlistSymbolResults() {
 
 document.addEventListener("input", (event) => {
   const target = event.target;
+  if (target.dataset.alertCommandField) {
+    updateAlertCommandDraft(target.dataset.alertCommandId, target.dataset.alertCommandField, target.value, { render: false });
+    return;
+  }
   if (target.dataset.groupDraftField) {
     const value = target.type === "checkbox" ? target.checked : target.value;
     updateGroupDraft(target.dataset.groupDraftId, target.dataset.groupDraftField, value);
@@ -4931,6 +5314,10 @@ document.addEventListener("focusin", (event) => {
 document.addEventListener("change", async (event) => {
   const target = event.target;
   try {
+    if (target.dataset.alertCommandField) {
+      updateAlertCommandDraft(target.dataset.alertCommandId, target.dataset.alertCommandField, target.value);
+      return;
+    }
     if (target.dataset.groupDraftField) {
       const field = target.dataset.groupDraftField;
       const value = target.type === "checkbox" ? target.checked : target.value;
@@ -5130,6 +5517,48 @@ document.addEventListener("click", async (event) => {
       state.alertTab = target.dataset.alertTab;
       syncBrowserRoute("alerts", { alertTab: state.alertTab });
       renderAlerts();
+      return;
+    }
+    if (target.dataset.alertCommandHistory) {
+      const input = $("#alertCommandInput");
+      if (input) {
+        input.value = target.dataset.alertCommandHistory;
+        input.focus();
+      }
+      return;
+    }
+    if (action === "clearAlertCommand") {
+      const input = $("#alertCommandInput");
+      if (input) input.value = "";
+      state.alertCommandDrafts = [];
+      state.lastAlertCommandText = "";
+      renderAlertCommandPreview();
+      return;
+    }
+    if (action === "cancelAlertCommand") {
+      state.alertCommandDrafts = [];
+      state.lastAlertCommandText = "";
+      renderAlertCommandPreview();
+      return;
+    }
+    if (action === "removeAlertCommandDraft") {
+      state.alertCommandDrafts = state.alertCommandDrafts.filter((draft) => draft.id !== target.dataset.alertCommandId);
+      renderAlertCommandPreview();
+      return;
+    }
+    if (action === "focusAlertCommandDraft") {
+      const card = document.querySelector(`[data-alert-command-card="${CSS.escape(target.dataset.alertCommandId)}"]`);
+      const field = card?.querySelector("input, select, textarea");
+      field?.focus();
+      return;
+    }
+    if (action === "saveAlertCommandDrafts") {
+      target.disabled = true;
+      try {
+        await saveAlertCommandDrafts();
+      } finally {
+        target.disabled = false;
+      }
       return;
     }
     if (action === "openAlerts") {
