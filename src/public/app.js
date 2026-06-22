@@ -1042,7 +1042,11 @@ function showAuthGate(mode = "login", message = "") {
   const eyebrow = $("#authEyebrow");
   const description = $("#authDescription");
   const nameField = $("#authNameField");
+  const currencyField = $("#authCurrencyField");
   const submit = $("#authSubmit");
+  const switchLine = $("#authSwitchLine");
+  const switchText = $("#authSwitchText");
+  const switchButton = $("#authModeSwitch");
   if (!gate) return;
   gate.hidden = false;
   document.body.classList.add("auth-active");
@@ -1051,15 +1055,35 @@ function showAuthGate(mode = "login", message = "") {
     title.textContent = "Secure ApexFolio";
     description.textContent = message || "Create your owner login. Your existing portfolio data stays attached to this account.";
     nameField.hidden = false;
+    if (currencyField) currencyField.hidden = true;
     submit.textContent = "Create Owner Login";
+    if (switchLine) switchLine.hidden = true;
     const emailInput = gate.querySelector('input[name="email"]');
     if (emailInput && !emailInput.value && state.dashboard?.user?.email) emailInput.value = state.dashboard.user.email;
+  } else if (mode === "register") {
+    eyebrow.textContent = "New Account";
+    title.textContent = "Create your ApexFolio login";
+    description.textContent = message || "Start with a private empty workspace. Your account will not share another user’s portfolio.";
+    nameField.hidden = false;
+    if (currencyField) currencyField.hidden = false;
+    submit.textContent = "Create Account";
+    if (switchLine) switchLine.hidden = false;
+    if (switchText) switchText.textContent = "Already have an account?";
+    if (switchButton) switchButton.textContent = "Sign in";
   } else {
     eyebrow.textContent = "Portfolio Intelligence";
     title.textContent = "Sign in to ApexFolio";
     description.textContent = message || "Enter your email and password to continue.";
     nameField.hidden = true;
+    if (currencyField) currencyField.hidden = true;
     submit.textContent = "Sign In";
+    if (switchLine) switchLine.hidden = false;
+    if (switchText) switchText.textContent = "No account yet?";
+    if (switchButton) switchButton.textContent = "Create account";
+  }
+  const passwordInput = gate.querySelector('input[name="password"]');
+  if (passwordInput) {
+    passwordInput.autocomplete = mode === "login" ? "current-password" : "new-password";
   }
 }
 
@@ -4637,7 +4661,11 @@ document.addEventListener("submit", async (event) => {
   try {
     if (form.id === "authForm") {
       const body = Object.fromEntries(new FormData(form));
-      const endpoint = state.authMode === "setup" ? "/api/auth/setup" : "/api/auth/login";
+      const endpoint = state.authMode === "setup"
+        ? "/api/auth/setup"
+        : state.authMode === "register"
+          ? "/api/auth/register"
+          : "/api/auth/login";
       await api(endpoint, {
         method: "POST",
         body: JSON.stringify(body),
@@ -4646,7 +4674,11 @@ document.addEventListener("submit", async (event) => {
       await loadSession();
       await loadDashboard(true);
       configureAutoPrices();
-      toast(state.authMode === "setup" ? "Owner login created" : "Signed in");
+      toast(state.authMode === "setup"
+        ? "Owner login created"
+        : state.authMode === "register"
+          ? "Account created"
+          : "Signed in");
       return;
     }
     if (form.id === "addUserForm") {
@@ -5052,6 +5084,10 @@ document.addEventListener("click", async (event) => {
   if (!target) return;
   const action = target.dataset.action || target.id;
   try {
+    if (target.id === "authModeSwitch") {
+      showAuthGate(state.authMode === "register" ? "login" : "register");
+      return;
+    }
     if (action === "logout") {
       await api("/api/auth/logout", { method: "POST", skipAuthRedirect: true });
       state.session = null;

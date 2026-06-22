@@ -172,6 +172,32 @@ body.auth-active .app-shell {
   min-height: 46px;
 }
 
+.auth-switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.link-button {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  padding: 0;
+}
+
+.link-button:hover,
+.link-button:focus-visible {
+  color: var(--text);
+  text-decoration: underline;
+}
+
 .top-nav {
   position: sticky;
   top: 0;

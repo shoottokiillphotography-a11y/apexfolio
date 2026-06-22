@@ -169,3 +169,11 @@ export function createUserAccount(body, database = getDb()) {
   `).run(`watchlist_${userId}_default`, userId, createdAt, createdAt);
   return publicUser(database.prepare("SELECT * FROM users WHERE id = ?").get(userId));
 }
+
+export function registerUser(body, req, database = getDb()) {
+  if (authNeedsSetup(database)) {
+    throw new InputError("Owner login must be set up before public accounts can be created", 409);
+  }
+  const user = createUserAccount(body, database);
+  return { user, cookie: createSessionCookie(user.id, req, database) };
+}

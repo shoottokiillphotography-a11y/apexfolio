@@ -58,6 +58,7 @@ import {
   currentSession,
   listUsers,
   loginUser,
+  registerUser,
   requireOwner,
   setupOwner
 } from "./services/auth.js";
@@ -66,7 +67,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, "public");
 // Bump this on each backend release so /api/health and the startup log show which
 // code is actually running - the fastest way to confirm a server restart took.
-const APP_BUILD = "2026-06-22-login-responsive-nav";
+const APP_BUILD = "2026-06-23-public-signup";
 let stopScheduler = null;
 
 async function setSchedulerEnabled(enabled) {
@@ -281,6 +282,14 @@ async function handleApi(req, res, url) {
       path: "/api/auth/login",
       handler: async () => {
         const result = loginUser(await readJson(req), req, database);
+        return { __cookie: result.cookie, payload: { ok: true, user: result.user } };
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/auth/register",
+      handler: async () => {
+        const result = registerUser(await readJson(req), req, database);
         return { __cookie: result.cookie, payload: { ok: true, user: result.user } };
       }
     },

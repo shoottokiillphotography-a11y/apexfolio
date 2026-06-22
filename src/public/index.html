@@ -8,7 +8,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
     <link rel="apple-touch-icon" href="/favicon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=menu-mobile-1">
+    <link rel="stylesheet" href="/styles.css?v=signup-1">
   </head>
   <body>
     <section class="auth-gate" id="authGate" hidden>
@@ -21,6 +21,14 @@
           <span>Name</span>
           <input name="name" autocomplete="name" placeholder="Your name">
         </label>
+        <label class="field" id="authCurrencyField" hidden>
+          <span>Base Currency</span>
+          <select name="baseCurrency">
+            <option value="AUD">AUD</option>
+            <option value="USD">USD</option>
+            <option value="GBP">GBP</option>
+          </select>
+        </label>
         <label class="field">
           <span>Email</span>
           <input name="email" type="email" autocomplete="email" required>
@@ -30,6 +38,10 @@
           <input name="password" type="password" autocomplete="current-password" required minlength="8">
         </label>
         <button class="button primary auth-submit" id="authSubmit" type="submit">Sign In</button>
+        <p class="auth-switch" id="authSwitchLine">
+          <span id="authSwitchText">No account yet?</span>
+          <button class="link-button" id="authModeSwitch" type="button">Create account</button>
+        </p>
       </form>
     </section>
 
@@ -1058,6 +1070,6 @@
       </div>
     </dialog>
 
-    <script src="/app.js?v=menu-mobile-1" type="module"></script>
+    <script src="/app.js?v=signup-1" type="module"></script>
   </body>
 </html>
