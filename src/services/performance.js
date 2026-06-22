@@ -7,6 +7,7 @@ import {
   nowIso,
   roundMoney,
   roundPercent,
+  roundShares,
   safeJsonParse
 } from "../utils.js";
 import { convertAmount, getExchangeRate } from "./currency.js";
@@ -795,30 +796,82 @@ export async function stockDetail(userId, tickerInput, { refresh = false } = {})
     // Existing metric_json still gives the page useful context when Yahoo profile is unavailable.
   }
 
-  const lots = database.prepare(`
+  const rawLots = database.prepare(`
     SELECT id, quantity, original_quantity AS originalQuantity, purchase_price AS purchasePrice,
       purchase_currency AS purchaseCurrency, purchase_date AS purchaseDate
     FROM holding_lots
     WHERE user_id = ? AND ticker = ?
     ORDER BY purchase_date, created_at
   `).all(userId, ticker);
-  const openQuantity = lots.reduce((total, lot) => total + (Number(lot.quantity) || 0), 0);
-  const costBasis = await Promise.all(lots.map((lot) => (
-    convertAmount((Number(lot.quantity) || 0) * (Number(lot.purchasePrice) || 0), lot.purchaseCurrency, user.base_currency)
-  )));
-  const costBasisBase = roundMoney(costBasis.reduce((total, item) => total + (item?.amount || 0), 0));
-  const currentValue = quote?.price && openQuantity
-    ? await convertAmount(quote.price * openQuantity, quote.currency, user.base_currency)
-    : null;
   const realizedRows = database.prepare(`
-    SELECT r.quantity, r.sale_price AS salePrice, r.sale_currency AS saleCurrency,
-      r.gain_loss_base AS storedGainLossBase, r.proceeds_base AS storedProceedsBase,
+    SELECT r.id, r.lot_id AS lotId, r.quantity, r.sale_price AS salePrice,
+      r.sale_currency AS saleCurrency, r.sold_at AS soldAt,
+      r.cost_basis_base AS storedCostBasisBase, r.proceeds_base AS storedProceedsBase,
+      r.gain_loss_base AS storedGainLossBase, r.gain_loss_percent AS storedGainLossPercent,
       r.buy_price AS manualBuyPrice, r.buy_currency AS manualBuyCurrency,
+      r.source, r.notes, r.created_at AS createdAt,
       l.purchase_price AS lotPurchasePrice, l.purchase_currency AS lotPurchaseCurrency
     FROM realized_lots r
     LEFT JOIN holding_lots l ON l.id = r.lot_id
     WHERE r.user_id = ? AND r.ticker = ?
+    ORDER BY r.sold_at, r.created_at
   `).all(userId, ticker);
+  const salesByLot = new Map();
+  for (const row of realizedRows) {
+    const quantity = Number(row.quantity) || 0;
+    const buyCurrency = row.lotPurchaseCurrency || row.manualBuyCurrency;
+    const buyPrice = row.lotPurchaseCurrency ? row.lotPurchasePrice : row.manualBuyPrice;
+    const saleCurrency = row.saleCurrency;
+    const costBasis = buyCurrency
+      ? await convertAmount(quantity * (Number(buyPrice) || 0), buyCurrency, user.base_currency).catch(() => null)
+      : null;
+    const proceeds = saleCurrency
+      ? await convertAmount(quantity * (Number(row.salePrice) || 0), saleCurrency, user.base_currency).catch(() => null)
+      : null;
+    const costBasisBase = roundMoney(costBasis?.amount ?? (Number(row.storedCostBasisBase) || 0));
+    const proceedsBase = roundMoney(proceeds?.amount ?? (Number(row.storedProceedsBase) || 0));
+    const gainLossBase = costBasis?.amount != null && proceeds?.amount != null
+      ? roundMoney(proceeds.amount - costBasis.amount)
+      : roundMoney(Number(row.storedGainLossBase) || 0);
+    if (row.lotId) {
+      const lotSales = salesByLot.get(row.lotId) || [];
+      lotSales.push({
+        id: row.id,
+        lotId: row.lotId,
+        quantity: roundShares(quantity),
+        salePrice: Number(row.salePrice) || 0,
+        saleCurrency,
+        soldAt: row.soldAt,
+        costBasisBase,
+        proceedsBase,
+        gainLossBase,
+        gainLossPercent: costBasisBase ? roundPercent((gainLossBase / costBasisBase) * 100) : row.storedGainLossPercent,
+        source: row.source,
+        notes: row.notes,
+        createdAt: row.createdAt
+      });
+      salesByLot.set(row.lotId, lotSales);
+    }
+  }
+  const lots = [];
+  for (const lot of rawLots) {
+    const lotCostBasis = await convertAmount(
+      (Number(lot.quantity) || 0) * (Number(lot.purchasePrice) || 0),
+      lot.purchaseCurrency,
+      user.base_currency
+    ).catch(() => null);
+    lots.push({
+      ...lot,
+      soldQuantity: roundShares(Math.max(0, Number(lot.originalQuantity || 0) - Number(lot.quantity || 0))),
+      costBasisBase: roundMoney(lotCostBasis?.amount || 0),
+      sales: salesByLot.get(lot.id) || []
+    });
+  }
+  const openQuantity = lots.reduce((total, lot) => total + (Number(lot.quantity) || 0), 0);
+  const costBasisBase = roundMoney(lots.reduce((total, lot) => total + (Number(lot.costBasisBase) || 0), 0));
+  const currentValue = quote?.price && openQuantity
+    ? await convertAmount(quote.price * openQuantity, quote.currency, user.base_currency)
+    : null;
   let realizedGainLossBase = 0;
   let realizedProceedsBase = 0;
   for (const row of realizedRows) {

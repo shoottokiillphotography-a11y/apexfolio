@@ -2973,18 +2973,51 @@ function renderPositionRows(position, user) {
   const exposure = positionExposure(position);
   const priceValue = priceCellHtml(position.price, position.ticker, moveClass);
   const statusText = position.closed ? "Closed" : position.equityStatus === "CLOSED" ? "Closed" : "";
-  const lots = position.lots.map((lot) => `
-    <div class="lot-line">
-      <strong>${lot.purchaseDate}</strong>
-      <span>${number(lot.quantity, 4)} shares @ ${money(lot.purchasePrice, lot.purchaseCurrency)}</span>
-      <span>${money(lot.costBasisBase, user.baseCurrency)} basis</span>
-      <span class="${lot.unrealizedBase > 0 ? "positive" : lot.unrealizedBase < 0 ? "negative" : ""}">
-        ${signedMoney(lot.unrealizedBase, user.baseCurrency)} (${signedPercent(lot.unrealizedPercent)})
-      </span>
-      ${lot.quantity > 0 ? `<button class="button" data-open-sale="${position.ticker}" data-lot-id="${lot.id}" data-quantity="${lot.quantity}" data-price="${position.price?.price || ""}" data-currency="${position.price?.currency || lot.purchaseCurrency || user.baseCurrency}" type="button">Sell</button>` : ""}
-      <button class="button" data-open-alert="${position.ticker}" data-scope="LOT" data-lot-id="${lot.id}" type="button">Alert</button>
-    </div>
-  `).join("");
+  const lots = position.lots.map((lot) => {
+    const soldQuantity = lot.soldQuantity ?? Math.max(0, (Number(lot.originalQuantity) || 0) - (Number(lot.quantity) || 0));
+    const saleHistory = (lot.sales || []).map((sale) => `
+      <div class="lot-event sale">
+        <strong>Sold ${escapeHtml(sale.soldAt || "")}</strong>
+        <span>${number(sale.quantity, 4)} shares @ ${money(sale.salePrice, sale.saleCurrency)}</span>
+        <span>${money(sale.proceedsBase, user.baseCurrency)} proceeds</span>
+        <span class="${sale.gainLossBase > 0 ? "positive" : sale.gainLossBase < 0 ? "negative" : ""}">
+          ${signedMoney(sale.gainLossBase, user.baseCurrency)} (${signedPercent(sale.gainLossPercent)})
+        </span>
+      </div>
+    `).join("");
+    return `
+      <div class="lot-line">
+        <div class="lot-main">
+          <strong>${escapeHtml(lot.purchaseDate || "")}</strong>
+          <span>Bought ${number(lot.originalQuantity, 4)} @ ${money(lot.purchasePrice, lot.purchaseCurrency)}</span>
+          <span>${number(lot.quantity, 4)} open${soldQuantity ? ` · ${number(soldQuantity, 4)} sold` : ""}</span>
+        </div>
+        <div class="lot-metric">
+          <span>Open basis</span>
+          <strong>${money(lot.costBasisBase, user.baseCurrency)}</strong>
+        </div>
+        <div class="lot-metric">
+          <span>Unrealized</span>
+          <strong class="${lot.unrealizedBase > 0 ? "positive" : lot.unrealizedBase < 0 ? "negative" : ""}">
+            ${signedMoney(lot.unrealizedBase, user.baseCurrency)} (${signedPercent(lot.unrealizedPercent)})
+          </strong>
+        </div>
+        <div class="lot-actions">
+          ${lot.quantity > 0 ? `<button class="button" data-open-sale="${position.ticker}" data-lot-id="${lot.id}" data-quantity="${lot.quantity}" data-price="${position.price?.price || ""}" data-currency="${position.price?.currency || lot.purchaseCurrency || user.baseCurrency}" type="button">Sell</button>` : ""}
+          <button class="button" data-open-alert="${position.ticker}" data-scope="LOT" data-lot-id="${lot.id}" type="button">Alert</button>
+        </div>
+        <div class="lot-events">
+          <div class="lot-event buy">
+            <strong>Buy</strong>
+            <span>${number(lot.originalQuantity, 4)} shares</span>
+            <span>${money(lot.purchasePrice, lot.purchaseCurrency)}</span>
+            <span>${escapeHtml(lot.purchaseDate || "")}</span>
+          </div>
+          ${saleHistory || `<div class="lot-event muted"><strong>No sales yet</strong><span>This lot is still fully open.</span></div>`}
+        </div>
+      </div>
+    `;
+  }).join("");
   return `
     <tr class="${position.closed ? "closed-position" : ""}">
       <td>${tickerButton(position.ticker)}<br><span class="muted">${statusText || position.name || ""}</span></td>
@@ -3893,16 +3926,38 @@ function renderStockEvents(detail) {
 
 function renderStockLots(detail) {
   const lots = detail.lots || [];
-  $("#stockLotsTable").innerHTML = lots.length ? lots.map((lot) => `
-    <div class="compact-row wide">
-      <div><strong>${escapeHtml(lot.purchaseDate)}</strong><br><span class="muted">${number(lot.quantity, 4)} open / ${number(lot.originalQuantity, 4)} original</span></div>
-      <div>${money(lot.purchasePrice, lot.purchaseCurrency)}</div>
-      <div class="button-row">
-        ${lot.quantity > 0 ? `<button class="button" data-open-sale="${detail.ticker}" data-lot-id="${lot.id}" data-quantity="${lot.quantity}" data-price="${detail.quote?.price || ""}" data-currency="${detail.quote?.currency || lot.purchaseCurrency}" type="button">Sell</button>` : ""}
-        <button class="button" data-open-alert="${detail.ticker}" data-scope="LOT" data-lot-id="${lot.id}" type="button">Alert</button>
+  const baseCurrency = detail.position?.baseCurrency || state.dashboard?.user?.baseCurrency || detail.quote?.currency || "USD";
+  $("#stockLotsTable").innerHTML = lots.length ? lots.map((lot) => {
+    const soldQuantity = lot.soldQuantity ?? Math.max(0, (Number(lot.originalQuantity) || 0) - (Number(lot.quantity) || 0));
+    const sales = (lot.sales || []).map((sale) => `
+      <div class="lot-event sale">
+        <strong>Sold ${escapeHtml(sale.soldAt || "")}</strong>
+        <span>${number(sale.quantity, 4)} shares @ ${money(sale.salePrice, sale.saleCurrency)}</span>
+        <span>${money(sale.proceedsBase, baseCurrency)} proceeds</span>
+        <span class="${sale.gainLossBase > 0 ? "positive" : sale.gainLossBase < 0 ? "negative" : ""}">${signedMoney(sale.gainLossBase, baseCurrency)}</span>
       </div>
-    </div>
-  `).join("") : `<p class="muted">No lots saved for this ticker.</p>`;
+    `).join("");
+    return `
+      <div class="compact-row wide lot-detail-row">
+        <div><strong>${escapeHtml(lot.purchaseDate || "")}</strong><br><span class="muted">${number(lot.quantity, 4)} open / ${number(lot.originalQuantity, 4)} original${soldQuantity ? ` / ${number(soldQuantity, 4)} sold` : ""}</span></div>
+        <div>${money(lot.purchasePrice, lot.purchaseCurrency)}</div>
+        <div>${money(lot.costBasisBase, baseCurrency)} basis</div>
+        <div class="button-row">
+          ${lot.quantity > 0 ? `<button class="button" data-open-sale="${detail.ticker}" data-lot-id="${lot.id}" data-quantity="${lot.quantity}" data-price="${detail.quote?.price || ""}" data-currency="${detail.quote?.currency || lot.purchaseCurrency}" type="button">Sell</button>` : ""}
+          <button class="button" data-open-alert="${detail.ticker}" data-scope="LOT" data-lot-id="${lot.id}" type="button">Alert</button>
+        </div>
+        <div class="lot-events compact">
+          <div class="lot-event buy">
+            <strong>Buy</strong>
+            <span>${number(lot.originalQuantity, 4)} shares</span>
+            <span>${money(lot.purchasePrice, lot.purchaseCurrency)}</span>
+            <span>${escapeHtml(lot.purchaseDate || "")}</span>
+          </div>
+          ${sales || `<div class="lot-event muted"><strong>No sales yet</strong><span>This lot is still fully open.</span></div>`}
+        </div>
+      </div>
+    `;
+  }).join("") : `<p class="muted">No lots saved for this ticker.</p>`;
 }
 
 function renderStockPerformance() {

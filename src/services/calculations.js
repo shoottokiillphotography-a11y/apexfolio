@@ -227,17 +227,21 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
   `).all(userId);
 
   const realizedSourceRows = database.prepare(`
-    SELECT r.ticker, r.quantity, r.sale_price AS salePrice, r.sale_currency AS saleCurrency,
+    SELECT r.id, r.ticker, r.lot_id AS lotId, r.quantity,
+      r.sale_price AS salePrice, r.sale_currency AS saleCurrency, r.sold_at AS soldAt,
       r.cost_basis_base AS storedCostBasisBase, r.proceeds_base AS storedProceedsBase,
       r.gain_loss_base AS storedGainLossBase, r.buy_price AS manualBuyPrice,
       r.buy_currency AS manualBuyCurrency, r.bought_at AS manualBoughtAt,
+      r.gain_loss_percent AS storedGainLossPercent, r.source, r.notes, r.created_at AS createdAt,
       l.purchase_price AS lotPurchasePrice, l.purchase_currency AS lotPurchaseCurrency,
       l.purchase_date AS lotPurchaseDate
     FROM realized_lots r
     LEFT JOIN holding_lots l ON l.id = r.lot_id
     WHERE r.user_id = ?
+    ORDER BY r.sold_at, r.created_at
   `).all(userId);
   const realizedByTicker = new Map();
+  const realizedSalesByLot = new Map();
   for (const row of realizedSourceRows) {
     const quantity = Number(row.quantity) || 0;
     const buyCurrency = row.lotPurchaseCurrency || row.manualBuyCurrency;
@@ -263,6 +267,28 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
     const gainLossBase = costBasisBase != null && proceedsBase != null
       ? roundMoney(proceedsBase - costBasisBase)
       : Number(row.storedGainLossBase) || 0;
+    if (row.lotId) {
+      const saleRows = realizedSalesByLot.get(row.lotId) || [];
+      saleRows.push({
+        id: row.id,
+        ticker: row.ticker,
+        lotId: row.lotId,
+        quantity: roundShares(quantity),
+        salePrice: Number(row.salePrice) || 0,
+        saleCurrency: row.saleCurrency,
+        soldAt: row.soldAt,
+        costBasisBase: roundMoney(costBasisBase || 0),
+        proceedsBase: roundMoney(proceedsBase || 0),
+        gainLossBase: roundMoney(gainLossBase || 0),
+        gainLossPercent: costBasisBase
+          ? roundPercent((gainLossBase / costBasisBase) * 100)
+          : row.storedGainLossPercent,
+        source: row.source,
+        notes: row.notes,
+        createdAt: row.createdAt
+      });
+      realizedSalesByLot.set(row.lotId, saleRows);
+    }
     const existing = realizedByTicker.get(row.ticker) || { ticker: row.ticker, costBasisBase: 0, proceedsBase: 0, gainLossBase: 0 };
     existing.costBasisBase += costBasisBase || 0;
     existing.proceedsBase += proceedsBase || 0;
@@ -394,6 +420,8 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
       purchaseCurrency: lot.purchase_currency,
       purchasePriceBase,
       purchaseDate: lot.purchase_date,
+      soldQuantity: roundShares(Math.max(0, Number(lot.original_quantity || 0) - Number(lot.quantity || 0))),
+      sales: realizedSalesByLot.get(lot.id) || [],
       costBasisBase,
       currentValueBase,
       unrealizedBase,

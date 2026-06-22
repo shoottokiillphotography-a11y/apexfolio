@@ -127,6 +127,10 @@ function marketCurrency(ticker) {
   return "USD";
 }
 
+function transactionPriceCurrency(ticker, explicitTradePrice) {
+  return explicitTradePrice > 0 ? marketCurrency(ticker) : NETWEALTH_CURRENCY;
+}
+
 function resolveCategory(database, ticker) {
   const existing = database.prepare("SELECT category_id AS categoryId FROM equities WHERE ticker = ?").get(ticker);
   if (existing?.categoryId) return existing.categoryId;
@@ -244,7 +248,7 @@ function existingPurchaseEvent(database, userId, eventId) {
   `).get(userId, eventId);
 }
 
-function existingPurchaseByDetails(database, userId, ticker, quantity, purchasePrice, row) {
+function existingPurchaseByDetails(database, userId, ticker, quantity, purchasePrice, purchaseCurrency, row) {
   return database.prepare(`
     SELECT id, source, source_event_id AS sourceEventId
     FROM holding_lots
@@ -256,7 +260,22 @@ function existingPurchaseByDetails(database, userId, ticker, quantity, purchaseP
       AND abs(purchase_price - ?) < 0.000001
     ORDER BY created_at
     LIMIT 1
-  `).get(userId, ticker, row.date, NETWEALTH_CURRENCY, quantity, purchasePrice);
+  `).get(userId, ticker, row.date, purchaseCurrency, quantity, purchasePrice);
+}
+
+function existingLegacyPurchaseByDetails(database, userId, ticker, quantity, purchaseCurrency, row) {
+  if (purchaseCurrency === NETWEALTH_CURRENCY) return null;
+  return database.prepare(`
+    SELECT id, source, source_event_id AS sourceEventId
+    FROM holding_lots
+    WHERE user_id = ?
+      AND ticker = ?
+      AND purchase_date = ?
+      AND purchase_currency = ?
+      AND abs(original_quantity - ?) < 0.000001
+    ORDER BY created_at
+    LIMIT 1
+  `).get(userId, ticker, row.date, NETWEALTH_CURRENCY, quantity);
 }
 
 function markPurchaseAsNetwealth(database, lotId, eventId) {
@@ -274,6 +293,33 @@ function markPurchaseAsNetwealth(database, lotId, eventId) {
   `).run(eventId, nowIso(), lotId);
 }
 
+function updatePurchaseTradeDetails(database, lotId, purchasePrice, purchaseCurrency, eventId) {
+  const conflict = database.prepare(`
+    SELECT id FROM holding_lots
+    WHERE source = 'netwealth' AND source_event_id = ? AND id <> ?
+  `).get(eventId, lotId);
+  if (conflict) {
+    database.prepare(`
+      UPDATE holding_lots
+      SET purchase_price = ?,
+          purchase_currency = ?,
+          source = 'netwealth',
+          updated_at = ?
+      WHERE id = ?
+    `).run(purchasePrice, purchaseCurrency, nowIso(), lotId);
+    return;
+  }
+  database.prepare(`
+    UPDATE holding_lots
+    SET purchase_price = ?,
+        purchase_currency = ?,
+        source = 'netwealth',
+        source_event_id = COALESCE(source_event_id, ?),
+        updated_at = ?
+    WHERE id = ?
+  `).run(purchasePrice, purchaseCurrency, eventId, nowIso(), lotId);
+}
+
 function insertPurchase(database, userId, row) {
   const ticker = normalizeNetwealthTicker(database, row.code);
   if (!ticker) return { skipped: true };
@@ -283,17 +329,23 @@ function insertPurchase(database, userId, row) {
     : quantity > 0
       ? roundMoney(row.debits / quantity)
       : 0;
+  const purchaseCurrency = transactionPriceCurrency(ticker, row.purchasePrice);
   if (!quantity || quantity <= 0) throw new InputError("Purchase units must be greater than zero");
   if (purchasePrice == null || purchasePrice < 0) throw new InputError("Purchase price is missing");
 
   const eventId = sourceEventId(row, "purchase");
   const existing = existingPurchaseEvent(database, userId, eventId);
-  if (existing) return { matched: true };
+  if (existing) {
+    updatePurchaseTradeDetails(database, existing.id, purchasePrice, purchaseCurrency, eventId);
+    return { matched: true };
+  }
 
   ensureEquity(database, ticker, row.asset);
-  const detailMatch = existingPurchaseByDetails(database, userId, ticker, quantity, purchasePrice, row);
+  const detailMatch = existingPurchaseByDetails(database, userId, ticker, quantity, purchasePrice, purchaseCurrency, row)
+    || existingLegacyPurchaseByDetails(database, userId, ticker, quantity, purchaseCurrency, row);
   if (detailMatch) {
     markPurchaseAsNetwealth(database, detailMatch.id, eventId);
+    updatePurchaseTradeDetails(database, detailMatch.id, purchasePrice, purchaseCurrency, eventId);
     return { matched: true };
   }
 
@@ -311,7 +363,7 @@ function insertPurchase(database, userId, row) {
     quantity,
     quantity,
     purchasePrice,
-    NETWEALTH_CURRENCY,
+    purchaseCurrency,
     row.date,
     eventId,
     `${row.description}${row.processedDate ? ` processed ${row.processedDate}` : ""}`,
@@ -326,16 +378,46 @@ async function converted(amount, fromCurrency, toCurrency) {
   return roundMoney(result.amount);
 }
 
+function saleDetailQuantity(database, userId, ticker, soldAt, saleCurrency, salePrice) {
+  return database.prepare(`
+    SELECT SUM(quantity) AS quantity
+    FROM realized_lots
+    WHERE user_id = ?
+      AND ticker = ?
+      AND sold_at = ?
+      AND sale_currency = ?
+      AND abs(sale_price - ?) < 0.000001
+  `).get(userId, ticker, soldAt, saleCurrency, salePrice);
+}
+
+function updateSaleEventDetails(database, userId, eventId, salePrice, saleCurrency) {
+  database.prepare(`
+    UPDATE realized_lots
+    SET sale_price = ?,
+        sale_currency = ?
+    WHERE user_id = ?
+      AND source = 'netwealth'
+      AND source_event_id LIKE ?
+  `).run(salePrice, saleCurrency, userId, `${eventId}:%`);
+}
+
+function updateMatchedSaleDetails(database, userId, ticker, soldAt, previousCurrency, salePrice, saleCurrency) {
+  database.prepare(`
+    UPDATE realized_lots
+    SET sale_currency = ?,
+        sale_price = ?
+    WHERE user_id = ?
+      AND ticker = ?
+      AND sold_at = ?
+      AND sale_currency = ?
+      AND abs(sale_price - ?) < 0.000001
+  `).run(saleCurrency, salePrice, userId, ticker, soldAt, previousCurrency, salePrice);
+}
+
 async function insertSale(database, user, row) {
   const ticker = normalizeNetwealthTicker(database, row.code);
   if (!ticker) return { skipped: true };
   const eventId = sourceEventId(row, "sale");
-  const existing = database.prepare(`
-    SELECT id FROM realized_lots
-    WHERE user_id = ? AND source = 'netwealth' AND source_event_id LIKE ?
-    LIMIT 1
-  `).get(user.id, `${eventId}:%`);
-  if (existing) return { matched: true };
 
   ensureEquity(database, ticker, row.asset);
   const quantityToSell = roundShares(Math.abs(row.units));
@@ -344,19 +426,30 @@ async function insertSale(database, user, row) {
     : quantityToSell > 0
       ? roundMoney(row.credits / quantityToSell)
       : 0;
+  const saleCurrency = transactionPriceCurrency(ticker, row.salePrice);
   if (!quantityToSell || quantityToSell <= 0) throw new InputError("Sale units must be greater than zero");
   if (salePrice == null || salePrice < 0) throw new InputError("Sale price is missing");
-  const saleDetailMatch = database.prepare(`
-    SELECT SUM(quantity) AS quantity
-    FROM realized_lots
-    WHERE user_id = ?
-      AND ticker = ?
-      AND sold_at = ?
-      AND sale_currency = ?
-      AND abs(sale_price - ?) < 0.000001
-  `).get(user.id, ticker, row.date, NETWEALTH_CURRENCY, salePrice);
+
+  const existing = database.prepare(`
+    SELECT id FROM realized_lots
+    WHERE user_id = ? AND source = 'netwealth' AND source_event_id LIKE ?
+    LIMIT 1
+  `).get(user.id, `${eventId}:%`);
+  if (existing) {
+    updateSaleEventDetails(database, user.id, eventId, salePrice, saleCurrency);
+    return { matched: true };
+  }
+
+  const saleDetailMatch = saleDetailQuantity(database, user.id, ticker, row.date, saleCurrency, salePrice);
   if (Math.abs(Number(saleDetailMatch?.quantity || 0) - quantityToSell) < 0.000001) {
     return { matched: true };
+  }
+  if (saleCurrency !== NETWEALTH_CURRENCY) {
+    const legacySaleDetailMatch = saleDetailQuantity(database, user.id, ticker, row.date, NETWEALTH_CURRENCY, salePrice);
+    if (Math.abs(Number(legacySaleDetailMatch?.quantity || 0) - quantityToSell) < 0.000001) {
+      updateMatchedSaleDetails(database, user.id, ticker, row.date, NETWEALTH_CURRENCY, salePrice, saleCurrency);
+      return { matched: true };
+    }
   }
 
   const lots = database.prepare(`
@@ -381,7 +474,7 @@ async function insertSale(database, user, row) {
     );
     const proceedsBase = await converted(
       matchedQuantity * salePrice,
-      NETWEALTH_CURRENCY,
+      saleCurrency,
       user.base_currency
     );
     const gainLossBase = roundMoney(proceedsBase - costBasisBase);
@@ -413,7 +506,7 @@ async function insertSale(database, user, row) {
         match.lot.id,
         match.matchedQuantity,
         salePrice,
-        NETWEALTH_CURRENCY,
+        saleCurrency,
         row.date,
         match.costBasisBase,
         match.proceedsBase,
