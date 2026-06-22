@@ -130,11 +130,12 @@
             <button class="button" id="refreshPrices" type="button">Refresh Prices</button>
             <button class="button secondary" id="refreshIntl" type="button" title="Fetch fresh ASX / LSE / Copenhagen prices on demand">Refresh International</button>
             <button class="button secondary" id="autoPricesToggle" type="button" aria-pressed="true">Auto Prices On</button>
-            <label class="field compact dividend-date">
-              <span>Dividend since</span>
-              <input id="dividendFromDate" type="date">
+            <label class="field compact dividend-date dividend-source-field">
+              <span>Dividends</span>
+              <strong>CSV import only</strong>
+              <input id="dividendFromDate" type="date" hidden>
             </label>
-            <button class="button" id="syncDividends" type="button">Sync Dividends</button>
+            <button class="button" id="syncDividends" type="button">Check CSV Dividends</button>
             <button class="button secondary" id="refreshEvents" type="button">Refresh Events</button>
           </div>
         </header>
@@ -368,7 +369,7 @@
             <h2>Dividends</h2>
             <div class="button-row">
               <span class="muted" id="dividendCount"></span>
-              <button class="button secondary" data-action="syncDividends" type="button">Sync Dividends</button>
+              <button class="button secondary" data-action="syncDividends" type="button">Check CSV Dividends</button>
             </div>
           </div>
           <div id="dividendsTable" class="compact-table"></div>

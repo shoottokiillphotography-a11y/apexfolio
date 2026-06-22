@@ -193,7 +193,7 @@ function insertedBatch(database, userId, filename, rows, stats, errors) {
     filename,
     totalRows: rows.length,
     createdCount: stats.purchasesCreated + stats.salesCreated + stats.dividendsCreated + stats.cashBalancesUpdated,
-    updatedCount: stats.purchasesMatched + stats.salesMatched + stats.dividendsUpdated,
+    updatedCount: stats.purchasesMatched + stats.salesMatched + stats.dividendsUpdated + stats.dividendApiRowsRemoved,
     errorCount: errors.length,
     errors,
     details: stats
@@ -228,6 +228,52 @@ function resetImportedHistory(database, userId) {
   });
 }
 
+function removeNonCsvDividendRows(database, userId) {
+  const result = database.prepare(`
+    DELETE FROM dividend_payments
+    WHERE user_id = ?
+      AND source <> 'netwealth'
+  `).run(userId);
+  return result.changes || 0;
+}
+
+function existingPurchaseEvent(database, userId, eventId) {
+  return database.prepare(`
+    SELECT id FROM holding_lots
+    WHERE user_id = ? AND source = 'netwealth' AND source_event_id = ?
+  `).get(userId, eventId);
+}
+
+function existingPurchaseByDetails(database, userId, ticker, quantity, purchasePrice, row) {
+  return database.prepare(`
+    SELECT id, source, source_event_id AS sourceEventId
+    FROM holding_lots
+    WHERE user_id = ?
+      AND ticker = ?
+      AND purchase_date = ?
+      AND purchase_currency = ?
+      AND abs(original_quantity - ?) < 0.000001
+      AND abs(purchase_price - ?) < 0.000001
+    ORDER BY created_at
+    LIMIT 1
+  `).get(userId, ticker, row.date, NETWEALTH_CURRENCY, quantity, purchasePrice);
+}
+
+function markPurchaseAsNetwealth(database, lotId, eventId) {
+  const conflict = database.prepare(`
+    SELECT id FROM holding_lots
+    WHERE source = 'netwealth' AND source_event_id = ? AND id <> ?
+  `).get(eventId, lotId);
+  if (conflict) return;
+  database.prepare(`
+    UPDATE holding_lots
+    SET source = 'netwealth',
+        source_event_id = COALESCE(source_event_id, ?),
+        updated_at = ?
+    WHERE id = ?
+  `).run(eventId, nowIso(), lotId);
+}
+
 function insertPurchase(database, userId, row) {
   const ticker = normalizeNetwealthTicker(database, row.code);
   if (!ticker) return { skipped: true };
@@ -241,13 +287,16 @@ function insertPurchase(database, userId, row) {
   if (purchasePrice == null || purchasePrice < 0) throw new InputError("Purchase price is missing");
 
   const eventId = sourceEventId(row, "purchase");
-  const existing = database.prepare(`
-    SELECT id FROM holding_lots
-    WHERE user_id = ? AND source = 'netwealth' AND source_event_id = ?
-  `).get(userId, eventId);
+  const existing = existingPurchaseEvent(database, userId, eventId);
   if (existing) return { matched: true };
 
   ensureEquity(database, ticker, row.asset);
+  const detailMatch = existingPurchaseByDetails(database, userId, ticker, quantity, purchasePrice, row);
+  if (detailMatch) {
+    markPurchaseAsNetwealth(database, detailMatch.id, eventId);
+    return { matched: true };
+  }
+
   const now = nowIso();
   database.prepare(`
     INSERT INTO holding_lots (
@@ -297,6 +346,18 @@ async function insertSale(database, user, row) {
       : 0;
   if (!quantityToSell || quantityToSell <= 0) throw new InputError("Sale units must be greater than zero");
   if (salePrice == null || salePrice < 0) throw new InputError("Sale price is missing");
+  const saleDetailMatch = database.prepare(`
+    SELECT SUM(quantity) AS quantity
+    FROM realized_lots
+    WHERE user_id = ?
+      AND ticker = ?
+      AND sold_at = ?
+      AND sale_currency = ?
+      AND abs(sale_price - ?) < 0.000001
+  `).get(user.id, ticker, row.date, NETWEALTH_CURRENCY, salePrice);
+  if (Math.abs(Number(saleDetailMatch?.quantity || 0) - quantityToSell) < 0.000001) {
+    return { matched: true };
+  }
 
   const lots = database.prepare(`
     SELECT * FROM holding_lots
@@ -489,10 +550,12 @@ export async function importNetwealthTransactions({ userId, filename, matrix, re
     realizedRowsCreated: 0,
     dividendsCreated: 0,
     dividendsUpdated: 0,
+    dividendApiRowsRemoved: 0,
     cashBalancesUpdated: 0,
     ignoredRows: 0
   };
   const errors = [];
+  stats.dividendApiRowsRemoved = removeNonCsvDividendRows(database, userId);
   const cashBalance = extractCashBalance(matrix);
   if (updateCashBalance(database, userId, cashBalance)) stats.cashBalancesUpdated += 1;
 

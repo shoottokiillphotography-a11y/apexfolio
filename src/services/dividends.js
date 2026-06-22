@@ -111,106 +111,32 @@ function lotsWithBackfillStart(lots, fromDate) {
 
 export async function syncDividends(userId, { fromDate = null } = {}) {
   const database = getDb();
-  const user = database.prepare("SELECT * FROM users WHERE id = ?").get(userId);
-  const tickers = trackedDividendTickers(database, userId);
-  const created = [];
-  const updated = [];
-  const errors = [];
-  let yahooFallbackCount = 0;
-
-  for (const tickerRow of tickers) {
-    const ticker = tickerRow.ticker;
-    try {
-      const from = dateOnly(fromDate) || dateOnly(tickerRow.firstPurchaseDate);
-      const to = todayIsoDate();
-      const history = await fetchDividendHistory(ticker, from, to);
-      const dividends = history.dividends;
-      if (history.source === "yahoo") yahooFallbackCount += 1;
-      const lots = database.prepare(`
-        SELECT id, original_quantity, quantity, purchase_date
-        FROM holding_lots
-        WHERE user_id = ? AND ticker = ?
-      `).all(userId, ticker);
-      const realizedLots = database.prepare(`
-        SELECT lot_id, quantity, sold_at
-        FROM realized_lots
-        WHERE user_id = ? AND ticker = ?
-      `).all(userId, ticker);
-      const eligibleLots = lotsWithBackfillStart(lots, fromDate);
-
-      for (const dividend of dividends) {
-        const exDate = dateOnly(dividend.exDate || dividend.date);
-        const amountPerShare = Number(dividend.amount ?? dividend.dividend ?? dividend.cashDividend);
-        if (!exDate || !Number.isFinite(amountPerShare) || amountPerShare <= 0) continue;
-        const eligibleQuantity = eligibleQuantityForDividend(eligibleLots, realizedLots, exDate);
-        if (!eligibleQuantity || eligibleQuantity <= 0) continue;
-        const currency = normalizeCurrency(dividend.currency, tickerRow.currency || user.base_currency);
-        const grossAmount = roundMoney(eligibleQuantity * amountPerShare);
-        const converted = await convertAmount(grossAmount, currency, user.base_currency);
-        const grossAmountBase = roundMoney(converted.amount);
-        const sourceEventId = dividendSourceId(ticker, dividend);
-        const source = dividend.source || history.source;
-        const now = nowIso();
-
-        const result = transaction((tx) => tx.prepare(`
-          INSERT INTO dividend_payments (
-            id, user_id, ticker, ex_date, pay_date, record_date, amount_per_share,
-            currency, eligible_quantity, gross_amount, gross_amount_base,
-            source, source_event_id, payload_json, created_at, updated_at
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(user_id, ticker, source, source_event_id) DO UPDATE SET
-            pay_date = excluded.pay_date,
-            record_date = excluded.record_date,
-            amount_per_share = excluded.amount_per_share,
-            currency = excluded.currency,
-            eligible_quantity = excluded.eligible_quantity,
-            gross_amount = excluded.gross_amount,
-            gross_amount_base = excluded.gross_amount_base,
-            payload_json = excluded.payload_json,
-            updated_at = excluded.updated_at
-        `).run(
-          id("dividend"),
-          userId,
-          ticker,
-          exDate,
-          dateOnly(dividend.paymentDate || dividend.payDate),
-          dateOnly(dividend.recordDate),
-          amountPerShare,
-          currency,
-          eligibleQuantity,
-          grossAmount,
-          grossAmountBase,
-          source,
-          sourceEventId,
-          JSON.stringify(dividend),
-          now,
-          now
-        ));
-        if (result.changes) {
-          const existing = database.prepare(`
-            SELECT created_at AS createdAt, updated_at AS updatedAt
-            FROM dividend_payments
-            WHERE user_id = ? AND ticker = ? AND source = ? AND source_event_id = ?
-          `).get(userId, ticker, source, sourceEventId);
-          if (existing?.createdAt === existing?.updatedAt) created.push({ ticker, exDate, grossAmountBase });
-          else updated.push({ ticker, exDate, grossAmountBase });
-        }
-      }
-    } catch (error) {
-      errors.push({ ticker, message: error.message });
-    }
-  }
+  const removed = database.prepare(`
+    DELETE FROM dividend_payments
+    WHERE user_id = ?
+      AND source <> 'netwealth'
+  `).run(userId).changes || 0;
+  const row = database.prepare(`
+    SELECT COUNT(*) AS count, COALESCE(SUM(gross_amount_base), 0) AS grossAmountBase
+    FROM dividend_payments
+    WHERE user_id = ?
+      AND source = 'netwealth'
+  `).get(userId);
 
   return {
-    createdCount: created.length,
-    updatedCount: updated.length,
-    yahooFallbackCount,
-    errorCount: errors.length,
+    createdCount: 0,
+    updatedCount: 0,
+    removedExternalCount: removed,
+    csvDividendCount: Number(row?.count || 0),
+    csvGrossAmountBase: roundMoney(Number(row?.grossAmountBase || 0)),
+    csvOnly: true,
+    message: "Dividends are loaded only from uploaded transaction CSV files.",
+    yahooFallbackCount: 0,
+    errorCount: 0,
     fromDate: dateOnly(fromDate),
-    errors,
-    created,
-    updated
+    errors: [],
+    created: [],
+    updated: []
   };
 }
 

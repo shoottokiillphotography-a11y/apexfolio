@@ -4621,7 +4621,8 @@ document.addEventListener("submit", async (event) => {
       const result = await api("/api/imports", { method: "POST", body: data });
       if (result.kind === "netwealth_transactions") {
         const details = result.details || {};
-        toast(`${details.purchasesCreated || 0} buys, ${details.salesCreated || 0} sales, ${details.dividendsCreated || 0} distributions`);
+        const matched = (details.purchasesMatched || 0) + (details.salesMatched || 0) + (details.dividendsUpdated || 0);
+        toast(`${details.purchasesCreated || 0} buys, ${details.salesCreated || 0} sales, ${details.dividendsCreated || 0} CSV dividends added${matched ? `, ${matched} already there` : ""}`);
       } else {
         toast(`${result.createdCount} added, ${result.errorCount} errors`);
       }
@@ -5177,6 +5178,10 @@ document.addEventListener("click", async (event) => {
         body: JSON.stringify({ fromDate })
       });
       await loadDashboard();
+      if (result.csvOnly) {
+        toast(`${result.csvDividendCount || 0} CSV dividends tracked${result.removedExternalCount ? `, ${result.removedExternalCount} old API rows removed` : ""}`);
+        return;
+      }
       const errors = result.errorCount || result.errors?.length || 0;
       toast(`${result.createdCount} dividends added, ${result.updatedCount} updated${errors ? `, ${errors} errors` : ""}`);
     }

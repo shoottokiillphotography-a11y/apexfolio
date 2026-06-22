@@ -346,6 +346,12 @@ body.auth-active .app-shell {
   color: var(--text);
 }
 
+.dividend-source-field strong {
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .top-alert-indicator {
   display: inline-flex;
   align-items: center;
