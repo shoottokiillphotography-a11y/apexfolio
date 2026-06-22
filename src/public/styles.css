@@ -220,8 +220,7 @@ body.auth-active .app-shell {
   stroke-width: 1.9;
 }
 
-.brand-copy,
-.nav-label {
+.brand-copy {
   opacity: 1;
   width: auto;
   min-width: 0;
@@ -229,6 +228,15 @@ body.auth-active .app-shell {
   text-overflow: ellipsis;
   white-space: nowrap;
   transition: opacity 160ms ease, width 160ms ease;
+}
+
+.nav-label {
+  flex: 0 0 auto;
+  min-width: max-content;
+  opacity: 1;
+  overflow: visible;
+  white-space: nowrap;
+  transition: opacity 160ms ease;
 }
 
 .brand-copy strong {
@@ -247,7 +255,7 @@ body.auth-active .app-shell {
   justify-content: center;
   gap: 6px;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   scrollbar-width: none;
 }
 
@@ -260,9 +268,9 @@ body.auth-active .app-shell {
   align-items: center;
   gap: 8px;
   min-height: 46px;
-  min-width: 0;
-  max-width: 150px;
-  flex: 1 1 0;
+  min-width: max-content;
+  max-width: none;
+  flex: 0 1 auto;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   padding: 3px 8px 3px 3px;
@@ -3526,7 +3534,9 @@ dialog::backdrop {
   }
 
   .view-tab {
-    max-width: 132px;
+    max-width: none;
+    min-width: max-content;
+    flex: 0 1 auto;
     min-height: 42px;
     gap: 6px;
     padding-right: 7px;
@@ -3546,6 +3556,27 @@ dialog::backdrop {
   .top-user-email {
     display: none;
   }
+
+  .app-header {
+    grid-template-columns: minmax(180px, 0.72fr) minmax(0, 1.28fr);
+    gap: 14px;
+    padding-inline: 24px;
+  }
+
+  .app-header .header-actions {
+    gap: 8px;
+  }
+
+  .app-header .header-actions .field.compact {
+    min-width: 108px;
+  }
+
+  .app-header .header-actions .button {
+    min-width: 0;
+    padding-inline: 12px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
 }
 
 @media (max-width: 1360px) {
@@ -3555,15 +3586,15 @@ dialog::backdrop {
   }
 
   .view-tabs {
-    justify-content: stretch;
+    justify-content: center;
   }
 
   .view-tab {
-    flex: 1 1 0;
-    min-width: 0;
-    gap: 8px;
-    padding-right: 9px;
-    font-size: 13px;
+    flex: 0 1 auto;
+    min-width: max-content;
+    gap: 6px;
+    padding-right: 7px;
+    font-size: 12px;
   }
 
   .nav-icon {
@@ -3593,6 +3624,10 @@ dialog::backdrop {
   .brand-copy strong {
     font-size: 18px;
   }
+
+  .top-alert-indicator {
+    display: none;
+  }
 }
 
 @media (max-width: 1040px) {
@@ -3611,7 +3646,7 @@ dialog::backdrop {
   .view-tab {
     min-height: 42px;
     gap: 6px;
-    padding: 3px 5px;
+    padding: 3px 6px 3px 3px;
     font-size: 12px;
   }
 
@@ -3699,8 +3734,115 @@ dialog::backdrop {
 }
 
 @media (max-width: 760px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  .top-nav {
+    position: fixed;
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    display: block;
+    padding: 8px max(10px, env(safe-area-inset-left)) calc(8px + env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-right));
+    border-top: 1px solid var(--border);
+    border-bottom: none;
+    background: rgba(17, 18, 20, 0.98);
+  }
+
+  .top-nav-brand,
+  .top-nav-status,
+  .top-alert-indicator {
+    display: none;
+  }
+
+  .view-tabs {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+    overflow: visible;
+  }
+
+  .view-tab {
+    position: relative;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 58px;
+    gap: 3px;
+    padding: 5px 3px;
+    border-radius: 12px;
+    font-size: 10px;
+    line-height: 1;
+  }
+
+  .nav-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 10px;
+  }
+
+  .nav-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .nav-label {
+    min-width: 0;
+    max-width: 100%;
+    overflow: visible;
+    text-align: center;
+  }
+
+  .tab-count {
+    position: absolute;
+    top: 3px;
+    right: 7px;
+    min-width: 17px;
+    min-height: 17px;
+    padding: 0 4px;
+    font-size: 9px;
+  }
+
+  .workspace {
+    padding-bottom: calc(78px + env(safe-area-inset-bottom));
+  }
+
   main {
     padding-inline: 14px;
+    padding-bottom: calc(96px + env(safe-area-inset-bottom));
+  }
+
+  .app-header {
+    gap: 14px;
+    padding: 22px 14px 14px;
+  }
+
+  .app-header h1 {
+    font-size: 36px;
+  }
+
+  .app-header .header-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+
+  .app-header .header-actions .field.compact,
+  .app-header .header-actions .button,
+  .app-header .header-actions .field.compact select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .app-header .header-actions .button {
+    justify-content: center;
+    padding-inline: 8px;
+    font-size: 12px;
+    white-space: normal;
   }
 
   .summary-grid,

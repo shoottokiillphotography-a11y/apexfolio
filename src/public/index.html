@@ -8,7 +8,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
     <link rel="apple-touch-icon" href="/favicon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=perf-chart-1">
+    <link rel="stylesheet" href="/styles.css?v=menu-mobile-1">
   </head>
   <body>
     <section class="auth-gate" id="authGate" hidden>
@@ -130,12 +130,7 @@
             <button class="button" id="refreshPrices" type="button">Refresh Prices</button>
             <button class="button secondary" id="refreshIntl" type="button" title="Fetch fresh ASX / LSE / Copenhagen prices on demand">Refresh International</button>
             <button class="button secondary" id="autoPricesToggle" type="button" aria-pressed="true">Auto Prices On</button>
-            <label class="field compact dividend-date dividend-source-field">
-              <span>Dividends</span>
-              <strong>CSV import only</strong>
-              <input id="dividendFromDate" type="date" hidden>
-            </label>
-            <button class="button" id="syncDividends" type="button">Check CSV Dividends</button>
+            <input id="dividendFromDate" type="date" hidden>
             <button class="button secondary" id="refreshEvents" type="button">Refresh Events</button>
           </div>
         </header>
@@ -1063,6 +1058,6 @@
       </div>
     </dialog>
 
-    <script src="/app.js?v=perf-chart-1" type="module"></script>
+    <script src="/app.js?v=menu-mobile-1" type="module"></script>
   </body>
 </html>
