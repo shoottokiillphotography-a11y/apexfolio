@@ -4070,6 +4070,26 @@ dialog::backdrop {
   color: var(--danger);
 }
 
+.export-card {
+  align-content: start;
+}
+
+.export-actions {
+  display: grid;
+  gap: 7px;
+}
+
+.export-actions .button {
+  justify-self: start;
+  text-decoration: none;
+}
+
+.export-actions span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 /* Alerts page: executed box + portfolio overview */
 .alert-command-box {
   display: grid;

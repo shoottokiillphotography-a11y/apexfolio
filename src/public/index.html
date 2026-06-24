@@ -8,7 +8,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
     <link rel="apple-touch-icon" href="/favicon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=alert-command-1">
+    <link rel="stylesheet" href="/styles.css?v=exports-1">
   </head>
   <body>
     <section class="auth-gate" id="authGate" hidden>
@@ -639,6 +639,20 @@
               </div>
               <button class="button primary" id="schedulerToggle" type="button">Turn Scheduler On</button>
             </div>
+            <div class="settings-card export-card">
+              <div>
+                <strong>Downloads</strong>
+                <span>Save your ApexFolio records as CSV files</span>
+              </div>
+              <div class="export-actions">
+                <a class="button primary" href="/api/exports/full-history" download>Download Full History</a>
+                <span>Includes unrealized, realized, dividends, external closed trades, alerts, watchlists, events, notifications, imports, and cash.</span>
+              </div>
+              <div class="export-actions">
+                <a class="button secondary" href="/api/exports/current-portfolio" download>Download Current Portfolio</a>
+                <span>Includes only open positions, open lots, and current cash balances.</span>
+              </div>
+            </div>
           </div>
           <div class="import-history-header">
             <div>
@@ -1086,6 +1100,6 @@
       </div>
     </dialog>
 
-    <script src="/app.js?v=alert-command-1" type="module"></script>
+    <script src="/app.js?v=exports-1" type="module"></script>
   </body>
 </html>

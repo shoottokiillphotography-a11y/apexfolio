@@ -50,6 +50,7 @@ import { getRules, saveRules, resetRules, DEFAULT_RULES } from "./services/rules
 import { refreshTrackedFundamentals } from "./services/fundamentals.js";
 import { portfolioPerformance, stockDetail, tickerPerformance } from "./services/performance.js";
 import { seedStrategyAlerts } from "./services/strategy-alerts.js";
+import { exportCurrentPortfolioCsv, exportFullHistoryCsv } from "./services/export-data.js";
 import {
   authenticatedUser,
   authNeedsSetup,
@@ -67,7 +68,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, "public");
 // Bump this on each backend release so /api/health and the startup log show which
 // code is actually running - the fastest way to confirm a server restart took.
-const APP_BUILD = "2026-06-23-public-signup";
+const APP_BUILD = "2026-06-25-portfolio-exports";
 let stopScheduler = null;
 
 async function setSchedulerEnabled(enabled) {
@@ -193,6 +194,17 @@ function sendJson(res, statusCode, payload, extraHeaders = {}) {
   res.end(body);
 }
 
+function sendDownload(res, statusCode, download) {
+  const body = Buffer.isBuffer(download.body) ? download.body : Buffer.from(String(download.body || ""), "utf8");
+  res.writeHead(statusCode, {
+    "Content-Type": download.contentType || "application/octet-stream",
+    "Content-Length": body.length,
+    "Content-Disposition": `attachment; filename="${String(download.filename || "apexfolio-export.csv").replace(/"/g, "")}"`,
+    "Cache-Control": "no-store"
+  });
+  res.end(body);
+}
+
 async function sendStatic(req, res, pathname) {
   const requested = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const filePath = path.normalize(path.join(publicRoot, requested));
@@ -304,6 +316,10 @@ async function handleApi(req, res, url) {
     const params = route(req.method, url.pathname, pattern);
     if (params) {
       const result = await pattern.handler(params);
+      if (result?.__download) {
+        sendDownload(res, 200, result);
+        return;
+      }
       if (result?.__cookie) {
         sendJson(res, 200, result.payload, { "Set-Cookie": result.__cookie });
       } else {
@@ -328,6 +344,16 @@ async function handleApi(req, res, url) {
       method: "GET",
       path: "/api/dashboard",
       handler: async () => calculatePortfolio(user.id, { refreshPrices: url.searchParams.get("refresh") === "true" })
+    },
+    {
+      method: "GET",
+      path: "/api/exports/full-history",
+      handler: async () => exportFullHistoryCsv(user.id)
+    },
+    {
+      method: "GET",
+      path: "/api/exports/current-portfolio",
+      handler: async () => exportCurrentPortfolioCsv(user.id)
     },
     {
       method: "GET",
@@ -796,6 +822,10 @@ async function handleApi(req, res, url) {
     const params = route(req.method, url.pathname, pattern);
     if (params) {
       const result = await pattern.handler(params);
+      if (result?.__download) {
+        sendDownload(res, 200, result);
+        return;
+      }
       sendJson(res, 200, result);
       return;
     }
