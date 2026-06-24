@@ -52,6 +52,12 @@ import { portfolioPerformance, stockDetail, tickerPerformance } from "./services
 import { seedStrategyAlerts } from "./services/strategy-alerts.js";
 import { exportCurrentPortfolioCsv, exportFullHistoryCsv } from "./services/export-data.js";
 import {
+  createExternalIncomeEvent,
+  deleteExternalIncomeEvent,
+  realizedIncomeTimeline,
+  updateExternalIncomeEvent
+} from "./services/realized-income.js";
+import {
   authenticatedUser,
   authNeedsSetup,
   clearSessionCookie,
@@ -68,7 +74,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, "public");
 // Bump this on each backend release so /api/health and the startup log show which
 // code is actually running - the fastest way to confirm a server restart took.
-const APP_BUILD = "2026-06-25-portfolio-exports";
+const APP_BUILD = "2026-06-25-realized-income";
 let stopScheduler = null;
 
 async function setSchedulerEnabled(enabled) {
@@ -354,6 +360,29 @@ async function handleApi(req, res, url) {
       method: "GET",
       path: "/api/exports/current-portfolio",
       handler: async () => exportCurrentPortfolioCsv(user.id)
+    },
+    {
+      method: "GET",
+      path: "/api/realized-income",
+      handler: async () => realizedIncomeTimeline(user.id, {
+        range: url.searchParams.get("range") || "all",
+        filter: url.searchParams.get("filter") || "all"
+      })
+    },
+    {
+      method: "POST",
+      path: "/api/external-income",
+      handler: async () => createExternalIncomeEvent(user.id, await readJson(req))
+    },
+    {
+      method: "PATCH",
+      path: "/api/external-income/:eventId",
+      handler: async ({ eventId }) => updateExternalIncomeEvent(user.id, eventId, await readJson(req))
+    },
+    {
+      method: "DELETE",
+      path: "/api/external-income/:eventId",
+      handler: async ({ eventId }) => deleteExternalIncomeEvent(user.id, eventId)
     },
     {
       method: "GET",

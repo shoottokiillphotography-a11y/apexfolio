@@ -238,6 +238,27 @@ function dividendRows(database, userId) {
   }, dividend));
 }
 
+function externalIncomeRows(database, userId) {
+  return database.prepare(`
+    SELECT *
+    FROM external_income_events
+    WHERE user_id = ?
+    ORDER BY event_date DESC, created_at DESC
+  `).all(userId).map((event) => row(event.event_type === "EXPENSE" ? "external_expense" : "external_income", {
+    id: event.id,
+    name: event.source_description,
+    group: event.category,
+    currency: event.currency,
+    amount: cleanNumber(event.net_amount),
+    value_base: cleanNumber(event.converted_amount_base),
+    date: event.event_date,
+    status: event.recurring ? "recurring" : "one_time",
+    source: event.property_account,
+    note: event.notes,
+    details: `Gross ${cleanNumber(event.gross_amount)} ${event.currency}; fees/tax ${cleanNumber(event.fees_tax)} ${event.currency}; add to cash ${event.add_to_cash ? "yes" : "no"}`
+  }, event));
+}
+
 function watchlistRows(database, userId) {
   const listRows = database.prepare(`
     SELECT wl.*, COUNT(w.id) AS item_count
@@ -393,6 +414,7 @@ export async function exportFullHistoryCsv(userId) {
     ...lotRows(dashboard),
     ...realizedRows(database, userId),
     ...dividendRows(database, userId),
+    ...externalIncomeRows(database, userId),
     ...cashRows(dashboard),
     ...watchlistRows(database, userId),
     ...alertRows(database, userId),

@@ -182,6 +182,12 @@ const state = {
   portfolioPerformanceRange: localStorage.getItem("portfolioPerformanceRange") || "1y",
   portfolioPerformanceMode: initialPerformanceMode,
   portfolioPerformance: null,
+  realizedIncome: null,
+  realizedIncomeRange: localStorage.getItem("realizedIncomeRange") || "all",
+  realizedIncomeFilter: localStorage.getItem("realizedIncomeFilter") || "all",
+  realizedIncomeMode: localStorage.getItem("realizedIncomeMode") || "individual",
+  realizedIncomeView: localStorage.getItem("realizedIncomeView") || "timeline",
+  realizedIncomeChartEvents: [],
   news: cachedDashboardSnapshot.news || null,
   portfolioPerformanceLoading: false,
   stockPerformanceRange: localStorage.getItem("stockPerformanceRange") || "1y",
@@ -1154,6 +1160,7 @@ async function loadDashboard(refresh = false) {
     render();
     renderAccountState();
     if (!state.portfolioPerformance) loadPortfolioPerformance().catch(() => undefined);
+    loadRealizedIncome().catch(() => undefined);
     newsPromise.then((newsPayload) => {
       state.news = newsPayload;
       saveCachedDashboardSnapshot();
@@ -1162,6 +1169,16 @@ async function loadDashboard(refresh = false) {
   } finally {
     state.dashboardLoading = false;
   }
+}
+
+async function loadRealizedIncome() {
+  const query = new URLSearchParams({
+    range: state.realizedIncomeRange,
+    filter: state.realizedIncomeFilter
+  });
+  const payload = await api(`/api/realized-income?${query}`);
+  state.realizedIncome = payload;
+  renderRealizedIncome();
 }
 
 function mergeCategories(categoryRows = [], allocationRows = []) {
@@ -4797,6 +4814,362 @@ function renderExternalTransactions() {
   `;
 }
 
+const REALIZED_RANGES = [
+  ["month", "Month"],
+  ["ytd", "YTD"],
+  ["1y", "1Y"],
+  ["3y", "3Y"],
+  ["5y", "5Y"],
+  ["all", "All"]
+];
+const REALIZED_FILTERS = [
+  ["all", "All"],
+  ["sales", "Sales"],
+  ["dividends", "Dividends"],
+  ["external_income", "External income"],
+  ["external_expense", "External expenses"]
+];
+const REALIZED_MODES = [
+  ["individual", "Individual"],
+  ["cumulative", "Cumulative"]
+];
+const REALIZED_VIEWS = [
+  ["timeline", "Timeline"],
+  ["transactions", "Transactions"],
+  ["dividends", "Dividends"],
+  ["external", "External Income"]
+];
+
+function renderSegmentButtons(node, options, currentValue, dataName) {
+  if (!node) return;
+  node.innerHTML = options.map(([value, label]) => `
+    <button class="range-tab ${value === currentValue ? "active" : ""}" data-${dataName}="${value}" aria-selected="${value === currentValue}" type="button">${escapeHtml(label)}</button>
+  `).join("");
+}
+
+function realizedEventLabel(event) {
+  return {
+    share_sale: Number(event.amountBase) >= 0 ? "Share gain" : "Share loss",
+    dividend: "Dividend",
+    external_income: "External income",
+    external_expense: "External expense"
+  }[event.transactionType] || "Realized event";
+}
+
+function realizedEventClass(event) {
+  if (event.transactionType === "external_expense") return "negative expense";
+  if (event.transactionType === "share_sale" && Number(event.amountBase) < 0) return "negative sale";
+  if (event.transactionType === "dividend") return "positive dividend";
+  if (event.transactionType === "external_income") return "positive external";
+  return "positive sale";
+}
+
+function realizedEventSource(event) {
+  return event.ticker || event.source || event.details?.description || "Manual entry";
+}
+
+function realizedRows(events, { only = "all", externalActions = false } = {}) {
+  const baseCurrency = state.realizedIncome?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  const filtered = events.filter((event) => {
+    if (only === "dividends") return event.transactionType === "dividend";
+    if (only === "external") return event.transactionType === "external_income" || event.transactionType === "external_expense";
+    return true;
+  });
+  if (!filtered.length) {
+    return `
+      <div class="empty-state">
+        <strong>No completed entries in this view</strong>
+        <span>Change the filter or period to include more realized history.</span>
+      </div>
+    `;
+  }
+  return filtered.map((event) => {
+    const details = event.details || {};
+    const amountClass = Number(event.amountBase) < 0 ? "negative" : "positive";
+    const original = `${money(event.amountOriginal, event.currency)} original`;
+    const converted = event.conversionUnavailable
+      ? "FX unavailable"
+      : `${signedMoney(event.amountBase, baseCurrency)} base`;
+    const sourceLabel = event.ticker ? tickerButton(event.ticker, realizedEventSource(event)) : escapeHtml(realizedEventSource(event));
+    const quantity = details.quantity != null ? `${number(details.quantity, 4)} shares` : "";
+    const tradeDetail = event.transactionType === "share_sale"
+      ? `${quantity}${quantity ? " | " : ""}Sold @ ${money(details.salePrice, details.saleCurrency)} | Cost ${money(details.costBasisBase, baseCurrency)}`
+      : event.transactionType === "dividend"
+        ? `${number(details.eligibleQuantity, 4)} shares | ${money(details.amountPerShare, event.currency)} per share`
+        : `${escapeHtml(details.category || "")}${details.feesTax ? ` | Fees/tax ${money(details.feesTax, event.currency)}` : ""}`;
+    const actions = externalActions && (event.transactionType === "external_income" || event.transactionType === "external_expense")
+      ? `
+        <div class="button-row">
+          <button class="button secondary" data-edit-external-income="${escapeHtml(event.id)}" type="button">Edit</button>
+          <button class="button danger" data-delete-external-income="${escapeHtml(event.id)}" type="button">Delete</button>
+        </div>
+      `
+      : "";
+    return `
+      <div class="compact-row realized-income-row">
+        <div>
+          <span class="income-dot ${realizedEventClass(event)}"></span>
+          <strong>${escapeHtml(realizedEventLabel(event))}</strong>
+          <br><span class="muted">${escapeHtml(event.date)} | ${sourceLabel}</span>
+        </div>
+        <div>${tradeDetail}<br><span class="muted">${escapeHtml(details.notes || details.description || "")}</span></div>
+        <div class="num ${amountClass}">
+          ${converted}
+          <br><span class="muted">${original}</span>
+        </div>
+        ${actions}
+      </div>
+    `;
+  }).join("");
+}
+
+function renderRealizedIncomeSummary() {
+  const node = $("#realizedIncomeSummary");
+  if (!node) return;
+  const payload = state.realizedIncome;
+  const baseCurrency = payload?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  const summary = payload?.summary || {};
+  const cards = [
+    ["Share gains", summary.realizedShareGainsBase, "positive"],
+    ["Share losses", summary.realizedShareLossesBase, "negative"],
+    ["Net realized P&L", summary.netRealizedPnlBase, valueClass(summary.netRealizedPnlBase)],
+    ["Dividends", summary.dividendsReceivedBase, "positive"],
+    ["External income", summary.externalIncomeBase, "positive"],
+    ["External expenses", summary.externalExpensesBase, "negative"],
+    ["Total net income", summary.totalNetIncomeBase, valueClass(summary.totalNetIncomeBase)]
+  ];
+  node.innerHTML = cards.map(([label, value, className]) => `
+    <div class="metric-card compact">
+      <span>${escapeHtml(label)}</span>
+      <strong class="${className}">${signedMoney(value || 0, baseCurrency)}</strong>
+    </div>
+  `).join("") + (summary.conversionUnavailableCount ? `
+    <div class="metric-card compact warning-card">
+      <span>FX gaps</span>
+      <strong>${summary.conversionUnavailableCount}</strong>
+    </div>
+  ` : "");
+}
+
+function realizedChartShape(event, x, y, index) {
+  const cls = `realized-point ${realizedEventClass(event)}`;
+  const label = escapeHtml(`${event.date} ${realizedEventLabel(event)} ${realizedEventSource(event)}`);
+  if (event.transactionType === "dividend") {
+    return `<rect class="${cls}" data-income-point="${index}" x="${x - 5}" y="${y - 5}" width="10" height="10" transform="rotate(45 ${x} ${y})" aria-label="${label}"></rect>`;
+  }
+  if (event.transactionType === "external_income") {
+    return `<polygon class="${cls}" data-income-point="${index}" points="${x},${y - 7} ${x - 7},${y + 6} ${x + 7},${y + 6}" aria-label="${label}"></polygon>`;
+  }
+  if (event.transactionType === "external_expense") {
+    return `<rect class="${cls}" data-income-point="${index}" x="${x - 6}" y="${y - 6}" width="12" height="12" rx="2" aria-label="${label}"></rect>`;
+  }
+  return `<circle class="${cls}" data-income-point="${index}" cx="${x}" cy="${y}" r="6" aria-label="${label}"></circle>`;
+}
+
+function renderRealizedIncomeChart() {
+  const svg = $("#realizedIncomeChart");
+  if (!svg) return;
+  const payload = state.realizedIncome;
+  const baseCurrency = payload?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  const sourceEvents = (payload?.events || []).filter((event) => Number.isFinite(Number(event.amountBase)));
+  const width = 900;
+  const height = 300;
+  const pad = { left: 92, right: 28, top: 28, bottom: 54 };
+  state.realizedIncomeChartEvents = [];
+  if (!sourceEvents.length) {
+    svg.innerHTML = `
+      <rect width="${width}" height="${height}" rx="18" class="chart-empty-bg"></rect>
+      <text x="${width / 2}" y="${height / 2 - 8}" text-anchor="middle" class="chart-empty-title">No realized entries</text>
+      <text x="${width / 2}" y="${height / 2 + 18}" text-anchor="middle" class="chart-empty-subtitle">Sales, CSV dividends, and manual income will appear here.</text>
+    `;
+    return;
+  }
+  let running = 0;
+  const plotted = sourceEvents.map((event) => {
+    const amount = Number(event.amountBase) || 0;
+    running += amount;
+    return {
+      ...event,
+      chartValue: state.realizedIncomeMode === "cumulative" ? running : amount,
+      timestamp: Date.parse(`${event.date}T00:00:00Z`)
+    };
+  });
+  state.realizedIncomeChartEvents = plotted;
+  const minTime = Math.min(...plotted.map((event) => event.timestamp));
+  const maxTime = Math.max(...plotted.map((event) => event.timestamp));
+  const rawValues = plotted.map((event) => event.chartValue);
+  const minValue = Math.min(0, ...rawValues);
+  const maxValue = Math.max(0, ...rawValues);
+  const spanValue = maxValue - minValue || Math.max(1, Math.abs(maxValue || minValue || 1));
+  const minY = minValue - spanValue * 0.12;
+  const maxY = maxValue + spanValue * 0.12;
+  const chartWidth = width - pad.left - pad.right;
+  const chartHeight = height - pad.top - pad.bottom;
+  const xFor = (timestamp) => pad.left + ((timestamp - minTime) / Math.max(1, maxTime - minTime)) * chartWidth;
+  const yFor = (value) => pad.top + ((maxY - value) / Math.max(1, maxY - minY)) * chartHeight;
+  const yTicks = Array.from({ length: 5 }, (_, index) => minY + ((maxY - minY) * index) / 4);
+  const xTicks = Array.from({ length: Math.min(5, plotted.length) }, (_, index) => {
+    const value = minTime + ((maxTime - minTime) * index) / Math.max(1, Math.min(5, plotted.length) - 1);
+    return new Date(value);
+  });
+  const zeroY = yFor(0);
+  const shapes = plotted.map((event, index) => realizedChartShape(event, xFor(event.timestamp), yFor(event.chartValue), index)).join("");
+  svg.innerHTML = `
+    <rect width="${width}" height="${height}" rx="18" class="chart-empty-bg"></rect>
+    <line x1="${pad.left}" x2="${width - pad.right}" y1="${zeroY}" y2="${zeroY}" class="zero-line"></line>
+    ${yTicks.map((tick) => {
+      const y = yFor(tick);
+      return `
+        <line x1="${pad.left}" x2="${width - pad.right}" y1="${y}" y2="${y}" class="grid-line"></line>
+        <text x="${pad.left - 12}" y="${y + 4}" text-anchor="end" class="axis-label">${money(tick, baseCurrency)}</text>
+      `;
+    }).join("")}
+    ${xTicks.map((tick) => {
+      const x = xFor(tick.getTime());
+      return `<text x="${x}" y="${height - 18}" text-anchor="middle" class="axis-label">${tick.toISOString().slice(0, 10)}</text>`;
+    }).join("")}
+    ${shapes}
+  `;
+}
+
+function renderRealizedIncome() {
+  if (!state.dashboard) return;
+  renderSegmentButtons($("#realizedIncomeRanges"), REALIZED_RANGES, state.realizedIncomeRange, "realized-range");
+  renderSegmentButtons($("#realizedIncomeFilters"), REALIZED_FILTERS, state.realizedIncomeFilter, "realized-filter");
+  renderSegmentButtons($("#realizedIncomeModes"), REALIZED_MODES, state.realizedIncomeMode, "realized-mode");
+  renderSegmentButtons($("#realizedIncomeViews"), REALIZED_VIEWS, state.realizedIncomeView, "realized-view");
+  document.querySelectorAll("[data-income-view-panel]").forEach((node) => {
+    node.hidden = node.dataset.incomeViewPanel !== state.realizedIncomeView;
+  });
+  const payload = state.realizedIncome;
+  const events = payload?.events || [];
+  renderRealizedIncomeSummary();
+  renderRealizedIncomeChart();
+  const legend = $("#realizedIncomeLegend");
+  if (legend) {
+    legend.innerHTML = [
+      ["sale", "Share sale"],
+      ["dividend", "Dividend"],
+      ["external", "External income"],
+      ["expense", "External expense"]
+    ].map(([className, label]) => `<span><span class="income-dot ${className}"></span>${escapeHtml(label)}</span>`).join("");
+  }
+  const transactions = $("#realizedIncomeTransactionsTable");
+  if (transactions) transactions.innerHTML = realizedRows(events);
+  const dividends = $("#realizedIncomeDividendsTable");
+  if (dividends) dividends.innerHTML = realizedRows(events, { only: "dividends" });
+  const external = $("#externalIncomeTable");
+  if (external) external.innerHTML = realizedRows(events, { only: "external", externalActions: true });
+}
+
+function resetExternalIncomeForm() {
+  const form = $("#externalIncomeForm");
+  if (!form) return;
+  form.reset();
+  form.dataset.eventId = "";
+  const date = form.elements.date;
+  if (date) date.value = new Date().toISOString().slice(0, 10);
+  const currency = form.elements.currency;
+  if (currency) currency.value = state.dashboard?.user?.baseCurrency || "AUD";
+  const submit = $("#externalIncomeSubmit");
+  if (submit) submit.textContent = "Save Entry";
+  const cancel = $("#externalIncomeCancel");
+  if (cancel) cancel.hidden = true;
+}
+
+function editExternalIncome(eventId) {
+  const entry = (state.realizedIncome?.events || []).find((item) => String(item.id) === String(eventId));
+  if (!entry) {
+    toast("External income entry not found");
+    return;
+  }
+  const form = $("#externalIncomeForm");
+  if (!form) return;
+  const details = entry.details || {};
+  form.dataset.eventId = entry.id;
+  form.elements.type.value = entry.transactionType === "external_expense" ? "EXPENSE" : "INCOME";
+  form.elements.date.value = entry.date || "";
+  form.elements.category.value = details.category || (entry.transactionType === "external_expense" ? "External Expense" : "Other Income");
+  form.elements.description.value = details.description || entry.source || "";
+  form.elements.amount.value = Math.abs(Number(details.grossAmount ?? entry.amountOriginal) || 0);
+  form.elements.currency.value = entry.currency || state.dashboard?.user?.baseCurrency || "AUD";
+  form.elements.feesTax.value = details.feesTax || "";
+  form.elements.netAmount.value = details.netAmount || "";
+  form.elements.propertyAccount.value = details.propertyAccount || "";
+  form.elements.notes.value = details.notes || "";
+  form.elements.recurring.checked = Boolean(details.recurring);
+  form.elements.addToCash.checked = Boolean(details.addToCash);
+  const submit = $("#externalIncomeSubmit");
+  if (submit) submit.textContent = "Save Changes";
+  const cancel = $("#externalIncomeCancel");
+  if (cancel) cancel.hidden = false;
+  state.realizedIncomeView = "external";
+  localStorage.setItem("realizedIncomeView", state.realizedIncomeView);
+  renderRealizedIncome();
+  form.scrollIntoView({ behavior: "smooth", block: "center" });
+  form.elements.description.focus();
+}
+
+function realizedTooltipHtml(event) {
+  const details = event.details || {};
+  const baseCurrency = state.realizedIncome?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  const rows = [
+    ["Date", event.date],
+    ["Type", realizedEventLabel(event)],
+    ["Ticker / source", realizedEventSource(event)],
+    ["Original", money(event.amountOriginal, event.currency)],
+    ["Converted", event.conversionUnavailable ? "FX unavailable" : signedMoney(event.amountBase, baseCurrency)]
+  ];
+  if (event.transactionType === "share_sale") {
+    rows.push(
+      ["Quantity", number(details.quantity, 4)],
+      ["Sale price", money(details.salePrice, details.saleCurrency)],
+      ["Cost basis", money(details.costBasisBase, baseCurrency)],
+      ["Proceeds", money(details.proceedsBase, baseCurrency)],
+      ["Gain / loss", signedMoney(details.gainLossBase, baseCurrency)],
+      ["Lot", details.lotId || "FIFO / external"],
+      ["Fees / tax", `${money(details.fees || 0, baseCurrency)} / ${money(details.taxes || 0, baseCurrency)}`]
+    );
+  }
+  if (event.transactionType === "dividend") {
+    rows.push(
+      ["Quantity", number(details.eligibleQuantity, 4)],
+      ["Per share", money(details.amountPerShare, event.currency)],
+      ["Ex / pay date", `${details.exDate || "-"} / ${details.payDate || "-"}`]
+    );
+  }
+  if (event.transactionType === "external_income" || event.transactionType === "external_expense") {
+    rows.push(
+      ["Category", details.category || "-"],
+      ["Gross", money(details.grossAmount, event.currency)],
+      ["Fees / tax", money(details.feesTax || 0, event.currency)],
+      ["Net", money(details.netAmount, event.currency)],
+      ["Property / account", details.propertyAccount || "-"],
+      ["Cash applied", details.addToCash ? "Yes, once" : "No"]
+    );
+  }
+  if (details.notes || details.description) rows.push(["Notes", details.notes || details.description]);
+  return `
+    <strong>${escapeHtml(realizedEventLabel(event))}</strong>
+    ${rows.map(([label, value]) => `
+      <div><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>
+    `).join("")}
+  `;
+}
+
+function showRealizedIncomeTooltip(index, x, y) {
+  const tooltip = $("#realizedIncomeTooltip");
+  const event = state.realizedIncomeChartEvents[Number(index)];
+  if (!tooltip || !event) return;
+  tooltip.innerHTML = realizedTooltipHtml(event);
+  tooltip.hidden = false;
+  const shell = tooltip.closest(".realized-income-chart-shell")?.getBoundingClientRect();
+  const left = shell ? x - shell.left : x;
+  const top = shell ? y - shell.top : y;
+  tooltip.style.left = `${Math.min(Math.max(12, left + 16), Math.max(12, (shell?.width || 360) - 290))}px`;
+  tooltip.style.top = `${Math.max(12, top - 34)}px`;
+}
+
 function renderNotifications() {
   const { notifications, user } = state.dashboard;
   const emailForm = $("#emailSettingsForm");
@@ -4844,6 +5217,7 @@ function render() {
   renderAlerts();
   renderDividends();
   renderExternalTransactions();
+  renderRealizedIncome();
   renderEvents();
   renderNotifications();
   renderWarnings();
@@ -5111,6 +5485,17 @@ document.addEventListener("submit", async (event) => {
       await submitJson("/api/transactions/external", Object.fromEntries(new FormData(form)));
       toast("Closed trade saved");
       form.reset();
+    }
+    if (form.id === "externalIncomeForm") {
+      const body = Object.fromEntries(new FormData(form));
+      const eventId = form.dataset.eventId;
+      const endpoint = eventId ? `/api/external-income/${encodeURIComponent(eventId)}` : "/api/external-income";
+      const method = eventId ? "PATCH" : "POST";
+      await submitJson(endpoint, body, { method });
+      toast(eventId ? "External income entry updated" : "External income entry saved");
+      resetExternalIncomeForm();
+      await loadDashboard();
+      await loadRealizedIncome();
     }
     if (form.id === "watchlistForm") {
       await submitJson("/api/watchlist", Object.fromEntries(new FormData(form)));
@@ -5517,6 +5902,56 @@ document.addEventListener("click", async (event) => {
       state.alertTab = target.dataset.alertTab;
       syncBrowserRoute("alerts", { alertTab: state.alertTab });
       renderAlerts();
+      return;
+    }
+    if (target.dataset.realizedRange) {
+      state.realizedIncomeRange = target.dataset.realizedRange;
+      localStorage.setItem("realizedIncomeRange", state.realizedIncomeRange);
+      await loadRealizedIncome();
+      return;
+    }
+    if (target.dataset.realizedFilter) {
+      state.realizedIncomeFilter = target.dataset.realizedFilter;
+      localStorage.setItem("realizedIncomeFilter", state.realizedIncomeFilter);
+      await loadRealizedIncome();
+      return;
+    }
+    if (target.dataset.realizedMode) {
+      state.realizedIncomeMode = target.dataset.realizedMode;
+      localStorage.setItem("realizedIncomeMode", state.realizedIncomeMode);
+      renderRealizedIncome();
+      return;
+    }
+    if (target.dataset.realizedView) {
+      state.realizedIncomeView = target.dataset.realizedView;
+      localStorage.setItem("realizedIncomeView", state.realizedIncomeView);
+      renderRealizedIncome();
+      return;
+    }
+    if (action === "focusExternalIncomeForm") {
+      state.realizedIncomeView = "external";
+      localStorage.setItem("realizedIncomeView", state.realizedIncomeView);
+      renderRealizedIncome();
+      resetExternalIncomeForm();
+      $("#externalIncomeForm")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      $("#externalIncomeForm")?.elements?.description?.focus();
+      return;
+    }
+    if (action === "cancelExternalIncomeEdit") {
+      resetExternalIncomeForm();
+      return;
+    }
+    if (target.dataset.editExternalIncome) {
+      editExternalIncome(target.dataset.editExternalIncome);
+      return;
+    }
+    if (target.dataset.deleteExternalIncome) {
+      const confirmed = window.confirm("Delete this manual income or expense entry? Any one-time cash adjustment from it will be reversed.");
+      if (!confirmed) return;
+      await api(`/api/external-income/${encodeURIComponent(target.dataset.deleteExternalIncome)}`, { method: "DELETE" });
+      await loadDashboard();
+      await loadRealizedIncome();
+      toast("External income entry deleted");
       return;
     }
     if (target.dataset.alertCommandHistory) {
@@ -6007,6 +6442,24 @@ document.addEventListener("click", async (event) => {
       || target.dataset.deleteCash
     ) target.disabled = false;
   }
+});
+
+document.addEventListener("pointerover", (event) => {
+  const point = event.target.closest?.("[data-income-point]");
+  if (!point) return;
+  showRealizedIncomeTooltip(point.dataset.incomePoint, event.clientX, event.clientY);
+});
+
+document.addEventListener("pointermove", (event) => {
+  const point = event.target.closest?.("[data-income-point]");
+  if (!point) return;
+  showRealizedIncomeTooltip(point.dataset.incomePoint, event.clientX, event.clientY);
+});
+
+document.addEventListener("pointerout", (event) => {
+  if (!event.target.closest?.("[data-income-point]")) return;
+  const tooltip = $("#realizedIncomeTooltip");
+  if (tooltip) tooltip.hidden = true;
 });
 
 document.addEventListener("visibilitychange", () => {

@@ -8,7 +8,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
     <link rel="apple-touch-icon" href="/favicon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=exports-1">
+    <link rel="stylesheet" href="/styles.css?v=income-1">
   </head>
   <body>
     <section class="auth-gate" id="authGate" hidden>
@@ -646,7 +646,7 @@
               </div>
               <div class="export-actions">
                 <a class="button primary" href="/api/exports/full-history" download>Download Full History</a>
-                <span>Includes unrealized, realized, dividends, external closed trades, alerts, watchlists, events, notifications, imports, and cash.</span>
+                <span>Includes unrealized, realized, dividends, external income/expenses, external closed trades, alerts, watchlists, events, notifications, imports, and cash.</span>
               </div>
               <div class="export-actions">
                 <a class="button secondary" href="/api/exports/current-portfolio" download>Download Current Portfolio</a>
@@ -662,6 +662,105 @@
             <button class="button secondary" id="toggleImportHistory" type="button" aria-expanded="false">Show</button>
           </div>
           <div id="importHistory" class="import-history"></div>
+        </section>
+
+        <section class="band realized-income-band" id="realizedIncomeBand">
+          <div class="band-header">
+            <div>
+              <p class="eyebrow">Realized Gains &amp; Income</p>
+              <h2>Completed Results Timeline</h2>
+              <p class="muted">Sold-lot P&amp;L, CSV dividends, and manual outside income stay visible without changing investment performance.</p>
+            </div>
+            <button class="button primary" data-action="focusExternalIncomeForm" type="button">Add External Income</button>
+          </div>
+
+          <div class="realized-income-toolbar">
+            <div class="toolbar-group">
+              <span>Period</span>
+              <div class="range-tabs" id="realizedIncomeRanges" aria-label="Realized income period"></div>
+            </div>
+            <div class="toolbar-group">
+              <span>Filter</span>
+              <div class="range-tabs" id="realizedIncomeFilters" aria-label="Realized income filter"></div>
+            </div>
+            <div class="toolbar-group">
+              <span>Chart</span>
+              <div class="range-tabs" id="realizedIncomeModes" aria-label="Realized income chart mode"></div>
+            </div>
+            <div class="toolbar-group">
+              <span>View</span>
+              <div class="range-tabs" id="realizedIncomeViews" aria-label="Realized income view"></div>
+            </div>
+          </div>
+
+          <div id="realizedIncomeSummary" class="summary-grid compact-summary realized-income-summary"></div>
+
+          <div class="realized-income-view" data-income-view-panel="timeline">
+            <div class="performance-chart-shell realized-income-chart-shell">
+              <svg id="realizedIncomeChart" class="performance-chart realized-income-chart" viewBox="0 0 900 300" role="img" aria-label="Realized gains and income dot timeline"></svg>
+              <div id="realizedIncomeTooltip" class="realized-income-tooltip" hidden></div>
+            </div>
+            <div id="realizedIncomeLegend" class="realized-income-legend"></div>
+          </div>
+
+          <div class="realized-income-view" data-income-view-panel="transactions" hidden>
+            <div id="realizedIncomeTransactionsTable" class="compact-table"></div>
+          </div>
+
+          <div class="realized-income-view" data-income-view-panel="dividends" hidden>
+            <div id="realizedIncomeDividendsTable" class="compact-table"></div>
+          </div>
+
+          <div class="realized-income-view" data-income-view-panel="external" hidden>
+            <div id="externalIncomeTable" class="compact-table"></div>
+          </div>
+
+          <form class="closed-transaction-form external-income-form" id="externalIncomeForm">
+            <select name="type" aria-label="Entry type">
+              <option value="INCOME">Income</option>
+              <option value="EXPENSE">Expense</option>
+            </select>
+            <input name="date" type="date" required>
+            <select name="category" aria-label="Category">
+              <option value="Rental Income">Rental income</option>
+              <option value="Interest">Interest</option>
+              <option value="Business Income">Business income</option>
+              <option value="Consulting Income">Consulting income</option>
+              <option value="Other Income">Other income</option>
+              <option value="External Expense">External expense</option>
+            </select>
+            <input name="description" placeholder="Source / description" required>
+            <input name="amount" type="number" step="0.01" placeholder="Gross amount" required>
+            <select name="currency" aria-label="Currency">
+              <option value="AUD">AUD</option>
+              <option value="USD">USD</option>
+              <option value="GBP">GBP</option>
+              <option value="EUR">EUR</option>
+              <option value="DKK">DKK</option>
+              <option value="HKD">HKD</option>
+              <option value="CHF">CHF</option>
+              <option value="CAD">CAD</option>
+              <option value="JPY">JPY</option>
+              <option value="SEK">SEK</option>
+              <option value="NOK">NOK</option>
+              <option value="NZD">NZD</option>
+              <option value="SGD">SGD</option>
+            </select>
+            <input name="feesTax" type="number" step="0.01" min="0" placeholder="Fees / tax">
+            <input name="netAmount" type="number" step="0.01" placeholder="Net override">
+            <input name="propertyAccount" placeholder="Property / account">
+            <input class="wide" name="notes" placeholder="Notes">
+            <label class="check">
+              <input type="checkbox" name="recurring" value="true">
+              <span>Recurring</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" name="addToCash" value="true">
+              <span>Add to cash once</span>
+            </label>
+            <button class="button primary" id="externalIncomeSubmit" type="submit">Save Entry</button>
+            <button class="button secondary" data-action="cancelExternalIncomeEdit" id="externalIncomeCancel" type="button" hidden>Cancel Edit</button>
+          </form>
         </section>
 
         <section class="two-column operations-settings-grid">
@@ -1100,6 +1199,6 @@
       </div>
     </dialog>
 
-    <script src="/app.js?v=exports-1" type="module"></script>
+    <script src="/app.js?v=income-1" type="module"></script>
   </body>
 </html>

@@ -4090,6 +4090,227 @@ dialog::backdrop {
   line-height: 1.45;
 }
 
+.realized-income-band {
+  display: grid;
+  gap: 18px;
+}
+
+.realized-income-toolbar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.toolbar-group {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.toolbar-group > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.realized-income-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.realized-income-chart-shell {
+  min-height: 320px;
+  position: relative;
+  overflow: visible;
+}
+
+.realized-income-chart {
+  min-height: 300px;
+}
+
+.realized-point {
+  cursor: crosshair;
+  stroke: var(--bg);
+  stroke-width: 2;
+  transition: transform 160ms ease, opacity 160ms ease, stroke-width 160ms ease;
+}
+
+.realized-point:hover {
+  opacity: 0.92;
+  stroke-width: 3;
+}
+
+.realized-point.positive,
+.income-dot.positive,
+.income-dot.external {
+  fill: var(--success);
+  background: var(--success);
+}
+
+.realized-point.negative,
+.income-dot.negative,
+.income-dot.expense {
+  fill: var(--danger);
+  background: var(--danger);
+}
+
+.realized-point.dividend,
+.income-dot.dividend {
+  fill: var(--accent);
+  background: var(--accent);
+}
+
+.realized-point.external {
+  fill: var(--ai);
+  background: var(--ai);
+}
+
+.realized-point.expense {
+  fill: var(--warning);
+  background: var(--warning);
+}
+
+.income-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.income-dot.dividend {
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+
+.income-dot.external {
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  border-radius: 0;
+}
+
+.income-dot.expense {
+  border-radius: 2px;
+  background: var(--warning);
+}
+
+.realized-income-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 4px;
+}
+
+.realized-income-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.realized-income-row {
+  grid-template-columns: minmax(180px, 0.9fr) minmax(260px, 1.4fr) minmax(170px, 0.8fr) auto;
+  align-items: center;
+}
+
+.realized-income-tooltip {
+  position: absolute;
+  z-index: 20;
+  width: min(300px, calc(100vw - 48px));
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 16px;
+  background: rgba(22, 24, 29, 0.98);
+  color: var(--text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+  pointer-events: none;
+}
+
+.realized-income-tooltip strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.realized-income-tooltip div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+}
+
+.realized-income-tooltip span {
+  color: var(--muted);
+}
+
+.realized-income-tooltip b {
+  text-align: right;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+}
+
+.external-income-form {
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+}
+
+.chart-empty-bg {
+  fill: rgba(255, 255, 255, 0.015);
+}
+
+.chart-empty-title {
+  fill: var(--text);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.chart-empty-subtitle,
+.axis-label {
+  fill: var(--muted);
+  font-size: 12px;
+}
+
+.grid-line {
+  stroke: rgba(255, 255, 255, 0.07);
+  stroke-width: 1;
+}
+
+.zero-line {
+  stroke: color-mix(in srgb, var(--accent) 62%, transparent);
+  stroke-dasharray: 5 6;
+  stroke-width: 1.4;
+}
+
+.warning-card strong {
+  color: var(--warning);
+}
+
+@media (max-width: 1180px) {
+  .realized-income-toolbar,
+  .realized-income-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .realized-income-toolbar,
+  .realized-income-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .realized-income-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Alerts page: executed box + portfolio overview */
 .alert-command-box {
   display: grid;

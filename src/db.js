@@ -347,6 +347,32 @@ function migrate(database) {
       updated_at TEXT NOT NULL,
       UNIQUE(user_id, symbol)
     );
+
+    CREATE TABLE IF NOT EXISTS external_income_events (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL CHECK (event_type IN ('INCOME','EXPENSE')),
+      event_date TEXT NOT NULL,
+      category TEXT NOT NULL,
+      source_description TEXT NOT NULL,
+      property_account TEXT,
+      gross_amount REAL NOT NULL,
+      currency TEXT NOT NULL,
+      fees_tax REAL NOT NULL DEFAULT 0,
+      net_amount REAL NOT NULL,
+      recurring INTEGER NOT NULL DEFAULT 0,
+      add_to_cash INTEGER NOT NULL DEFAULT 0,
+      cash_applied_amount REAL NOT NULL DEFAULT 0,
+      cash_applied_currency TEXT,
+      converted_amount_base REAL,
+      converted_currency TEXT,
+      fx_rate REAL,
+      conversion_date TEXT,
+      conversion_error TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   database.exec(`
