@@ -50,7 +50,13 @@ import { getRules, saveRules, resetRules, DEFAULT_RULES } from "./services/rules
 import { refreshTrackedFundamentals } from "./services/fundamentals.js";
 import { portfolioPerformance, stockDetail, tickerPerformance } from "./services/performance.js";
 import { seedStrategyAlerts } from "./services/strategy-alerts.js";
-import { exportCurrentPortfolioCsv, exportFullHistoryCsv } from "./services/export-data.js";
+import {
+  exportCurrentPortfolioCsv,
+  exportFullHistoryCsv,
+  exportInvestmentHistoryCsv,
+  exportPortfolioSnapshotCsv,
+  exportTriggeredAlertsCsv
+} from "./services/export-data.js";
 import {
   createExternalIncomeEvent,
   deleteExternalIncomeEvent,
@@ -74,7 +80,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, "public");
 // Bump this on each backend release so /api/health and the startup log show which
 // code is actually running - the fastest way to confirm a server restart took.
-const APP_BUILD = "2026-06-25-realized-income";
+const APP_BUILD = "2026-06-25-clean-exports";
 let stopScheduler = null;
 
 async function setSchedulerEnabled(enabled) {
@@ -360,6 +366,23 @@ async function handleApi(req, res, url) {
       method: "GET",
       path: "/api/exports/current-portfolio",
       handler: async () => exportCurrentPortfolioCsv(user.id)
+    },
+    {
+      method: "GET",
+      path: "/api/exports/portfolio",
+      handler: async () => exportPortfolioSnapshotCsv(user.id)
+    },
+    {
+      method: "GET",
+      path: "/api/exports/history",
+      handler: async () => exportInvestmentHistoryCsv(user.id)
+    },
+    {
+      method: "GET",
+      path: "/api/exports/triggered-alerts",
+      handler: async () => exportTriggeredAlertsCsv(user.id, {
+        includeReviewed: url.searchParams.get("include") === "reviewed"
+      })
     },
     {
       method: "GET",

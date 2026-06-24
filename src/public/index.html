@@ -642,15 +642,19 @@
             <div class="settings-card export-card">
               <div>
                 <strong>Downloads</strong>
-                <span>Save your ApexFolio records as CSV files</span>
+                <span>Clean CSVs built for portfolio analysis</span>
               </div>
               <div class="export-actions">
-                <a class="button primary" href="/api/exports/full-history" download>Download Full History</a>
-                <span>Includes unrealized, realized, dividends, external income/expenses, external closed trades, alerts, watchlists, events, notifications, imports, and cash.</span>
+                <a class="button primary" href="/api/exports/portfolio" download>Portfolio (snapshot)</a>
+                <span>Open holdings plus cash, sorted by current value. No closed positions, watchlists, or JSON dump.</span>
               </div>
               <div class="export-actions">
-                <a class="button secondary" href="/api/exports/current-portfolio" download>Download Current Portfolio</a>
-                <span>Includes only open positions, open lots, and current cash balances.</span>
+                <a class="button secondary" href="/api/exports/history" download>History (journal)</a>
+                <span>Chronological BUY, SELL, EXTERNAL_SELL, and DIVIDEND rows only.</span>
+              </div>
+              <div class="export-actions">
+                <a class="button secondary" href="/api/exports/triggered-alerts" download>Triggered alerts</a>
+                <span>Only alerts currently needing review. Add <code>?include=reviewed</code> to include reviewed triggers.</span>
               </div>
             </div>
           </div>
