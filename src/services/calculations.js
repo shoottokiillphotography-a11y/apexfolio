@@ -222,7 +222,7 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
     FROM holding_lots l
     JOIN equities e ON e.ticker = l.ticker
     LEFT JOIN categories c ON c.id = e.category_id
-    WHERE l.user_id = ? AND l.quantity > 0
+    WHERE l.user_id = ? AND l.original_quantity > 0
     ORDER BY l.ticker, l.purchase_date, l.created_at
   `).all(userId);
 
@@ -377,33 +377,38 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
   const positions = new Map();
 
   for (const lot of lots) {
+    const openQuantity = Number(lot.quantity || 0);
     let quote = pricesByTicker.get(lot.ticker);
-    if (!quote) {
+    if (!quote && openQuantity > 0) {
       quote = await getQuote(lot.ticker);
       pricesByTicker.set(lot.ticker, quote);
     }
 
-    const costBasisBase = await convertOrWarn(
-      lot.quantity * lot.purchase_price,
-      lot.purchase_currency,
-      baseCurrency,
-      warnings,
-      `${lot.ticker} lot ${lot.id} cost basis`
-    );
-    const purchasePriceBase = await convertOrWarn(
-      lot.purchase_price,
-      lot.purchase_currency,
-      baseCurrency,
-      warnings,
-      `${lot.ticker} lot ${lot.id} purchase price`
-    );
-    const currentPriceBase = quote?.price
+    const costBasisBase = openQuantity > 0
+      ? await convertOrWarn(
+        openQuantity * lot.purchase_price,
+        lot.purchase_currency,
+        baseCurrency,
+        warnings,
+        `${lot.ticker} lot ${lot.id} cost basis`
+      )
+      : 0;
+    const purchasePriceBase = openQuantity > 0
+      ? await convertOrWarn(
+        lot.purchase_price,
+        lot.purchase_currency,
+        baseCurrency,
+        warnings,
+        `${lot.ticker} lot ${lot.id} purchase price`
+      )
+      : null;
+    const currentPriceBase = quote?.price && openQuantity > 0
       ? await convertOrWarn(quote.price, quote.currency, baseCurrency, warnings, `${lot.ticker} live price`)
       : null;
 
     const currentValueBase = currentPriceBase == null
       ? costBasisBase
-      : roundMoney(currentPriceBase * lot.quantity);
+      : roundMoney(currentPriceBase * openQuantity);
     const unrealizedBase = costBasisBase == null || currentValueBase == null
       ? null
       : roundMoney(currentValueBase - costBasisBase);
@@ -462,7 +467,8 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
     }
 
     const position = positions.get(lot.ticker);
-    position.quantity += lot.quantity;
+    if (!position.price && quote) position.price = quote;
+    position.quantity += openQuantity;
     position.lotCount += 1;
     position.costBasisBase += costBasisBase || 0;
     position.currentValueBase += currentValueBase || 0;
@@ -514,11 +520,12 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
   }
 
   const positionList = [...positions.values()].map((position) => {
+    const quantity = roundShares(position.quantity);
     const costBasisBase = roundMoney(position.costBasisBase);
     const currentValueBase = roundMoney(position.currentValueBase);
     const unrealizedBase = roundMoney(position.unrealizedBase);
-    const averagePurchasePriceBase = position.quantity > 0
-      ? roundMoney(costBasisBase / position.quantity)
+    const averagePurchasePriceBase = quantity > 0
+      ? roundMoney(costBasisBase / quantity)
       : null;
     const unrealizedPercent = costBasisBase
       ? roundPercent((unrealizedBase / costBasisBase) * 100)
@@ -527,7 +534,8 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
     if (category) category.subtotalBase += currentValueBase || 0;
     return {
       ...position,
-      quantity: roundShares(position.quantity),
+      quantity,
+      closed: Boolean(position.closed || position.equityStatus === "CLOSED" || quantity <= 0),
       costBasisBase,
       currentValueBase,
       unrealizedBase,
