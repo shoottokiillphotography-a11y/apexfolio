@@ -624,13 +624,34 @@ export async function portfolioPerformance(userId, rangeInput = "1y") {
   });
   for (const result of historyResults) {
     if (result?.history) {
+      if (result.history.synthetic) {
+        warnings.push(`${result.ticker}: broker transaction fallback skipped for portfolio chart; real historical prices are required`);
+        continue;
+      }
       histories.set(result.ticker, result.history);
-      if (result.history.synthetic) warnings.push(`${result.ticker}: using broker transaction fallback`);
     }
     else if (result?.warning) warnings.push(result.warning);
   }
   if (!histories.size) {
-    return { range, currency: baseCurrency, points: [], ...performanceSummary([]), warnings };
+    warnings.unshift("No reliable historical market prices are loaded for this range. Broker transaction fallback was disabled because it can overstate portfolio value.");
+    return {
+      range,
+      label: PERFORMANCE_RANGES[range].label,
+      currency: baseCurrency,
+      provider: "historical prices required",
+      points: [],
+      ...performanceSummary([]),
+      performanceReliable: false,
+      baselineDate: startDate,
+      includesRealized: !currentOnly,
+      cashFlowDiagnostics: {
+        currentOnly,
+        cashIncludedBase: roundMoney(cashBase),
+        realizedRowsIncluded: currentOnly ? 0 : realizedSourceRows.length,
+        dividendRowsIncluded: currentOnly ? 0 : dividendRows.length
+      },
+      warnings: [...new Set(warnings)].slice(0, 20)
+    };
   }
 
   const anchorDates = buildAnchorDates(histories, startDate, endDate, PERFORMANCE_RANGES[range].maxPoints);
