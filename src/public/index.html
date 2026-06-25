@@ -8,7 +8,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
     <link rel="apple-touch-icon" href="/favicon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=wealth-1">
+    <link rel="stylesheet" href="/styles.css?v=lnw-1">
   </head>
   <body>
     <section class="auth-gate" id="authGate" hidden>
@@ -657,6 +657,14 @@
                 <span>Only alerts currently needing review. Add <code>?include=reviewed</code> to include reviewed triggers.</span>
               </div>
             </div>
+            <div class="settings-card owner-only">
+              <div>
+                <strong>Lot Repair</strong>
+                <span>Fix LNW.AX June sales to newest/cheapest lots.</span>
+              </div>
+              <button class="button secondary" data-action="repairLnwSales" type="button">Fix Light &amp; Wonder Lots</button>
+              <span class="muted" id="lnwRepairResult"></span>
+            </div>
           </div>
           <div class="import-history-header">
             <div>
@@ -1230,6 +1238,6 @@
       </div>
     </dialog>
 
-    <script src="/app.js?v=wealth-1" type="module"></script>
+    <script src="/app.js?v=lnw-1" type="module"></script>
   </body>
 </html>

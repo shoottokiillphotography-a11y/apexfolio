@@ -6242,6 +6242,25 @@ document.addEventListener("click", async (event) => {
       renderRealizedIncome();
       return;
     }
+    if (action === "repairLnwSales") {
+      const confirmed = window.confirm("Fix LNW.AX June Netwealth sales to newest/cheapest lots? A database backup will be created first.");
+      if (!confirmed) return;
+      target.disabled = true;
+      const resultNode = $("#lnwRepairResult");
+      if (resultNode) resultNode.textContent = "Repairing...";
+      try {
+        const result = await api("/api/admin/repair-lnw-sales", { method: "POST" });
+        if (resultNode) {
+          resultNode.textContent = `Done. Realized P&L changed by ${signedMoney(result.realizedGainLossChange || 0, state.dashboard?.user?.baseCurrency || "AUD")}.`;
+        }
+        await loadDashboard(true);
+        await loadRealizedIncome();
+        toast("Light & Wonder lots repaired");
+      } finally {
+        target.disabled = false;
+      }
+      return;
+    }
     if (action === "focusExternalIncomeForm") {
       state.realizedIncomeView = "external";
       localStorage.setItem("realizedIncomeView", state.realizedIncomeView);

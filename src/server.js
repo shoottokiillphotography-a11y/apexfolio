@@ -67,6 +67,7 @@ import {
   portfolioWealthTimeline,
   saveOpeningPortfolioBalance
 } from "./services/portfolio-wealth.js";
+import { reallocateLightWonderSales } from "./services/sale-lot-repair.js";
 import {
   authenticatedUser,
   authNeedsSetup,
@@ -84,7 +85,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, "public");
 // Bump this on each backend release so /api/health and the startup log show which
 // code is actually running - the fastest way to confirm a server restart took.
-const APP_BUILD = "2026-06-25-wealth-timeline";
+const APP_BUILD = "2026-06-25-lnw-sale-repair";
 let stopScheduler = null;
 
 async function setSchedulerEnabled(enabled) {
@@ -514,6 +515,14 @@ async function handleApi(req, res, url) {
       handler: async () => {
         requireOwner(user);
         return { user: createUserAccount(await readJson(req), database) };
+      }
+    },
+    {
+      method: "POST",
+      path: "/api/admin/repair-lnw-sales",
+      handler: async () => {
+        requireOwner(user);
+        return reallocateLightWonderSales(user.id, { apply: true });
       }
     },
     {
