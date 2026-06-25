@@ -4133,6 +4133,85 @@ dialog::backdrop {
   min-height: 300px;
 }
 
+.opening-balance-form {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.opening-balance-form .form-copy {
+  min-width: 210px;
+}
+
+.opening-balance-form .form-copy strong,
+.opening-balance-form .form-copy span {
+  display: block;
+}
+
+.opening-balance-form #openingBalanceStatus {
+  align-self: center;
+  white-space: nowrap;
+}
+
+.wealth-area {
+  fill: color-mix(in srgb, var(--success) 20%, transparent);
+  opacity: 0.7;
+}
+
+.wealth-line {
+  fill: none;
+  stroke: var(--success);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+  filter: drop-shadow(0 0 10px rgba(0, 194, 122, 0.16));
+}
+
+.wealth-anchor {
+  fill: var(--accent);
+  stroke: var(--bg);
+  stroke-width: 2;
+}
+
+.wealth-anchor.current {
+  fill: var(--success);
+}
+
+.wealth-label {
+  fill: var(--muted);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.wealth-label.current {
+  fill: var(--success);
+}
+
+.wealth-hit {
+  cursor: crosshair;
+  fill: transparent;
+  stroke: transparent;
+  stroke-width: 12;
+}
+
+.wealth-crosshair {
+  opacity: 0;
+  stroke: color-mix(in srgb, var(--accent) 58%, transparent);
+  stroke-dasharray: 3 6;
+  transition: opacity 160ms ease;
+}
+
+.wealth-point-group:hover .wealth-crosshair {
+  opacity: 1;
+}
+
+.wealth-marker {
+  filter: drop-shadow(0 0 8px rgba(201, 168, 106, 0.18));
+}
+
 .realized-point {
   cursor: crosshair;
   stroke: var(--bg);
@@ -4147,6 +4226,7 @@ dialog::backdrop {
 
 .realized-point.positive,
 .income-dot.positive,
+.income-dot.sale,
 .income-dot.external {
   fill: var(--success);
   background: var(--success);
@@ -4170,9 +4250,23 @@ dialog::backdrop {
   background: var(--ai);
 }
 
+.realized-point.neutral,
+.income-dot.neutral {
+  fill: var(--muted);
+  background: var(--muted);
+}
+
 .realized-point.expense {
   fill: var(--warning);
   background: var(--warning);
+}
+
+.income-dot.line {
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--success);
+  border: 0;
 }
 
 .income-dot {

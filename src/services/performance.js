@@ -314,7 +314,7 @@ function syntheticHistoryForTicker(ticker, lots, realizedRows, currentQuote, fal
   };
 }
 
-async function fetchPriceHistory(tickerInput, rangeInput = "1y", options = {}) {
+export async function fetchPriceHistory(tickerInput, rangeInput = "1y", options = {}) {
   const ticker = normalizeTicker(tickerInput);
   if (!ticker) throw new InputError("Ticker is required");
   const range = assertRange(rangeInput);

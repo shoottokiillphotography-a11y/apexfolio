@@ -64,6 +64,10 @@ import {
   updateExternalIncomeEvent
 } from "./services/realized-income.js";
 import {
+  portfolioWealthTimeline,
+  saveOpeningPortfolioBalance
+} from "./services/portfolio-wealth.js";
+import {
   authenticatedUser,
   authNeedsSetup,
   clearSessionCookie,
@@ -80,7 +84,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, "public");
 // Bump this on each backend release so /api/health and the startup log show which
 // code is actually running - the fastest way to confirm a server restart took.
-const APP_BUILD = "2026-06-25-clean-exports";
+const APP_BUILD = "2026-06-25-wealth-timeline";
 let stopScheduler = null;
 
 async function setSchedulerEnabled(enabled) {
@@ -391,6 +395,18 @@ async function handleApi(req, res, url) {
         range: url.searchParams.get("range") || "all",
         filter: url.searchParams.get("filter") || "all"
       })
+    },
+    {
+      method: "GET",
+      path: "/api/portfolio-wealth",
+      handler: async () => portfolioWealthTimeline(user.id, {
+        range: url.searchParams.get("range") || "all"
+      })
+    },
+    {
+      method: "POST",
+      path: "/api/portfolio-wealth/opening-balance",
+      handler: async () => saveOpeningPortfolioBalance(user.id, await readJson(req))
     },
     {
       method: "POST",

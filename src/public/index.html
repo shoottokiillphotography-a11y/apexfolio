@@ -8,7 +8,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
     <link rel="apple-touch-icon" href="/favicon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=income-1">
+    <link rel="stylesheet" href="/styles.css?v=wealth-1">
   </head>
   <body>
     <section class="auth-gate" id="authGate" hidden>
@@ -699,6 +699,33 @@
 
           <div id="realizedIncomeSummary" class="summary-grid compact-summary realized-income-summary"></div>
 
+          <form class="closed-transaction-form opening-balance-form" id="openingBalanceForm">
+            <div class="form-copy">
+              <strong>Opening Portfolio Balance</strong>
+              <span class="muted">Set this only if cash existed before the first recorded buy.</span>
+            </div>
+            <input name="date" type="date" aria-label="Opening balance date">
+            <input name="amount" type="number" step="0.01" min="0" placeholder="Opening balance">
+            <select name="currency" aria-label="Opening balance currency">
+              <option value="AUD">AUD</option>
+              <option value="USD">USD</option>
+              <option value="GBP">GBP</option>
+              <option value="EUR">EUR</option>
+              <option value="DKK">DKK</option>
+              <option value="HKD">HKD</option>
+              <option value="CHF">CHF</option>
+              <option value="CAD">CAD</option>
+              <option value="JPY">JPY</option>
+              <option value="SEK">SEK</option>
+              <option value="NOK">NOK</option>
+              <option value="NZD">NZD</option>
+              <option value="SGD">SGD</option>
+            </select>
+            <input class="wide" name="notes" placeholder="Optional note">
+            <button class="button secondary" type="submit">Save Opening Balance</button>
+            <span class="muted" id="openingBalanceStatus"></span>
+          </form>
+
           <div class="realized-income-view" data-income-view-panel="timeline">
             <div class="performance-chart-shell realized-income-chart-shell">
               <svg id="realizedIncomeChart" class="performance-chart realized-income-chart" viewBox="0 0 900 300" role="img" aria-label="Realized gains and income dot timeline"></svg>
@@ -1203,6 +1230,6 @@
       </div>
     </dialog>
 
-    <script src="/app.js?v=income-1" type="module"></script>
+    <script src="/app.js?v=wealth-1" type="module"></script>
   </body>
 </html>
