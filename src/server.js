@@ -64,7 +64,11 @@ import {
   updateExternalIncomeEvent
 } from "./services/realized-income.js";
 import {
+  createManualPortfolioSnapshot,
+  deletePortfolioSnapshot,
   portfolioWealthTimeline,
+  saveAutomaticPortfolioSnapshot,
+  updateManualPortfolioSnapshot,
   saveOpeningPortfolioBalance
 } from "./services/portfolio-wealth.js";
 import { reallocateLightWonderSales } from "./services/sale-lot-repair.js";
@@ -85,7 +89,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, "public");
 // Bump this on each backend release so /api/health and the startup log show which
 // code is actually running - the fastest way to confirm a server restart took.
-const APP_BUILD = "2026-06-25-performance-history-guard";
+const APP_BUILD = "2026-06-26-transaction-wealth-modes";
 let stopScheduler = null;
 
 async function setSchedulerEnabled(enabled) {
@@ -360,7 +364,11 @@ async function handleApi(req, res, url) {
     {
       method: "GET",
       path: "/api/dashboard",
-      handler: async () => calculatePortfolio(user.id, { refreshPrices: url.searchParams.get("refresh") === "true" })
+      handler: async () => {
+        const dashboard = await calculatePortfolio(user.id, { refreshPrices: url.searchParams.get("refresh") === "true" });
+        saveAutomaticPortfolioSnapshot(user.id, dashboard);
+        return dashboard;
+      }
     },
     {
       method: "GET",
@@ -408,6 +416,21 @@ async function handleApi(req, res, url) {
       method: "POST",
       path: "/api/portfolio-wealth/opening-balance",
       handler: async () => saveOpeningPortfolioBalance(user.id, await readJson(req))
+    },
+    {
+      method: "POST",
+      path: "/api/portfolio-wealth/snapshots",
+      handler: async () => createManualPortfolioSnapshot(user.id, await readJson(req))
+    },
+    {
+      method: "PATCH",
+      path: "/api/portfolio-wealth/snapshots/:snapshotId",
+      handler: async ({ snapshotId }) => updateManualPortfolioSnapshot(user.id, snapshotId, await readJson(req))
+    },
+    {
+      method: "DELETE",
+      path: "/api/portfolio-wealth/snapshots/:snapshotId",
+      handler: async ({ snapshotId }) => deletePortfolioSnapshot(user.id, snapshotId)
     },
     {
       method: "POST",

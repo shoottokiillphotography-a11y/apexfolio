@@ -158,14 +158,18 @@ const initialPerformanceMode = ["withCash", "withoutCash"].includes(savedPerform
   ? savedPerformanceMode
   : "withCash";
 const savedRealizedIncomeMode = localStorage.getItem("realizedIncomeMode");
+const realizedIncomeModeAliases = {
+  investment_growth: "book_value",
+  realized_income: "realized_growth",
+  cumulative_income: "realized_growth"
+};
 const initialRealizedIncomeMode = [
+  "realized_growth",
+  "book_value",
   "portfolio_value",
-  "investment_growth",
-  "realized_income",
-  "cumulative_income"
 ].includes(savedRealizedIncomeMode)
   ? savedRealizedIncomeMode
-  : "portfolio_value";
+  : realizedIncomeModeAliases[savedRealizedIncomeMode] || "realized_growth";
 
 const state = {
   session: null,
@@ -1193,6 +1197,15 @@ async function loadRealizedIncome() {
   ]);
   state.realizedIncome = incomePayload;
   state.portfolioWealth = wealthPayload;
+  const validModes = new Set(REALIZED_MODES.map(([value]) => value));
+  if (!validModes.has(state.realizedIncomeMode)) {
+    state.realizedIncomeMode = wealthPayload?.recommendedMode || "realized_growth";
+    localStorage.setItem("realizedIncomeMode", state.realizedIncomeMode);
+  }
+  if (state.realizedIncomeMode === "portfolio_value" && !(wealthPayload?.actualPortfolioValue?.points || []).length) {
+    state.realizedIncomeMode = wealthPayload?.recommendedMode || "realized_growth";
+    localStorage.setItem("realizedIncomeMode", state.realizedIncomeMode);
+  }
   renderRealizedIncome();
 }
 
@@ -4845,10 +4858,9 @@ const REALIZED_FILTERS = [
   ["external_expense", "External expenses"]
 ];
 const REALIZED_MODES = [
-  ["portfolio_value", "Portfolio Value"],
-  ["investment_growth", "Investment Growth"],
-  ["realized_income", "Realized P&L & Income"],
-  ["cumulative_income", "Cumulative Income"]
+  ["realized_growth", "Realized Growth"],
+  ["book_value", "Book Value"],
+  ["portfolio_value", "Actual Value"]
 ];
 const REALIZED_VIEWS = [
   ["timeline", "Timeline"],
@@ -4865,19 +4877,21 @@ function renderSegmentButtons(node, options, currentValue, dataName) {
 }
 
 function realizedEventLabel(event) {
+  const kind = event.transactionType || event.type;
   return {
     share_sale: Number(event.amountBase) >= 0 ? "Share gain" : "Share loss",
     dividend: "Dividend",
     external_income: "External income",
     external_expense: "External expense"
-  }[event.transactionType] || "Realized event";
+  }[kind] || "Realized event";
 }
 
 function realizedEventClass(event) {
-  if (event.transactionType === "external_expense") return "negative expense";
-  if (event.transactionType === "share_sale" && Number(event.amountBase) < 0) return "negative sale";
-  if (event.transactionType === "dividend") return "positive dividend";
-  if (event.transactionType === "external_income") return "positive external";
+  const kind = event.transactionType || event.type;
+  if (kind === "external_expense") return "negative expense";
+  if (kind === "share_sale" && Number(event.amountBase) < 0) return "negative sale";
+  if (kind === "dividend") return "positive dividend";
+  if (kind === "external_income") return "positive external";
   return "positive sale";
 }
 
@@ -4943,56 +4957,29 @@ function realizedRows(events, { only = "all", externalActions = false } = {}) {
 function renderRealizedIncomeSummary() {
   const node = $("#realizedIncomeSummary");
   if (!node) return;
-  const payload = state.realizedIncome;
   const wealth = state.portfolioWealth;
-  const baseCurrency = wealth?.baseCurrency || payload?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
-  if (state.realizedIncomeMode === "portfolio_value" || state.realizedIncomeMode === "investment_growth") {
-    const summary = wealth?.summary || {};
-    const quality = wealth?.dataQuality || {};
-    const changeValue = state.realizedIncomeMode === "investment_growth"
-      ? summary.investmentGrowthChangeValue
-      : summary.changeValue;
-    const changePercent = state.realizedIncomeMode === "investment_growth"
-      ? summary.investmentGrowthChangePercent
-      : summary.changePercent;
-    const cards = [
-      ["Starting value", summary.startValue, ""],
-      ["Current value", summary.endValue, ""],
-      ["Portfolio change", changeValue, valueClass(changeValue)],
-      ["Return", signedPercent(changePercent), valueClass(changePercent)],
-      ["Current cash", summary.currentDashboardCashBase, ""],
-      ["Data quality", quality.finalPointReconciles ? "Reconciled" : "Check gaps", quality.finalPointReconciles ? "positive" : "warning-card"]
-    ];
-    node.innerHTML = cards.map(([label, value, className]) => `
-      <div class="metric-card compact ${className === "warning-card" ? "warning-card" : ""}">
-        <span>${escapeHtml(label)}</span>
-        <strong class="${className && className !== "warning-card" ? className : ""}">${typeof value === "number" ? money(value, baseCurrency) : escapeHtml(value ?? "n/a")}</strong>
-      </div>
-    `).join("");
-    return;
-  }
-  const baseCurrencyForRealized = payload?.baseCurrency || baseCurrency;
-  const summary = payload?.summary || {};
+  const baseCurrency = wealth?.baseCurrency || state.realizedIncome?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  const summary = wealth?.summary || {};
   const cards = [
-    ["Share gains", summary.realizedShareGainsBase, "positive"],
-    ["Share losses", summary.realizedShareLossesBase, "negative"],
-    ["Net realized P&L", summary.netRealizedPnlBase, valueClass(summary.netRealizedPnlBase)],
-    ["Dividends", summary.dividendsReceivedBase, "positive"],
-    ["External income", summary.externalIncomeBase, "positive"],
-    ["External expenses", summary.externalExpensesBase, "negative"],
-    ["Total net income", summary.totalNetIncomeBase, valueClass(summary.totalNetIncomeBase)]
+    ["Net capital contributed", summary.netCapitalContributedBase, valueClass(summary.netCapitalContributedBase), "signed"],
+    ["Open-lot cost basis", summary.currentOpenCostBasisBase, "", "money"],
+    ["Net realized P&L", summary.netRealizedPnlBase, valueClass(summary.netRealizedPnlBase), "signed"],
+    ["Dividends", summary.dividendsBase, "positive", "signed"],
+    ["External income", summary.externalIncomeBase, "positive", "signed"],
+    ["External expenses", summary.externalExpensesBase, "negative", "signed"],
+    ["Current cash", summary.currentCashBase, "", "money"],
+    ["Current portfolio market value", summary.currentPortfolioMarketValueBase, "", "money"],
+    ["Current book value", summary.currentBookValueBase, "", "money"],
+    ["Saved snapshots", summary.snapshotCount || 0, "", "number"]
   ];
-  node.innerHTML = cards.map(([label, value, className]) => `
+  node.innerHTML = cards.map(([label, value, className, kind]) => `
     <div class="metric-card compact">
       <span>${escapeHtml(label)}</span>
-      <strong class="${className}">${signedMoney(value || 0, baseCurrencyForRealized)}</strong>
+      <strong class="${className}">
+        ${kind === "number" ? number(value || 0, 0) : kind === "signed" ? signedMoney(value || 0, baseCurrency) : money(value || 0, baseCurrency)}
+      </strong>
     </div>
-  `).join("") + (summary.conversionUnavailableCount ? `
-    <div class="metric-card compact warning-card">
-      <span>FX gaps</span>
-      <strong>${summary.conversionUnavailableCount}</strong>
-    </div>
-  ` : "");
+  `).join("");
 }
 
 function realizedChartShape(event, x, y, index) {
@@ -5052,7 +5039,7 @@ function wealthEventShape(event, x, y, index) {
   return `<circle class="${cls}" data-income-point="${index}" cx="${x}" cy="${y}" r="6" aria-label="${label}"></circle>`;
 }
 
-function closestWealthPoint(points, date) {
+function closestChartPoint(points, date) {
   if (!points.length) return null;
   let best = points[0];
   for (const point of points) {
@@ -5062,35 +5049,14 @@ function closestWealthPoint(points, date) {
   return best;
 }
 
-function renderWealthChart() {
-  const svg = $("#realizedIncomeChart");
-  const payload = state.portfolioWealth;
-  if (!svg) return;
-  const baseCurrency = payload?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
-  const points = (payload?.points || []).filter((point) => Number.isFinite(Number(point.totalValueBase)));
+function incomeChartScales(plotted, valueKeys, options = {}) {
   const width = 900;
   const height = 300;
   const pad = { left: 96, right: 34, top: 28, bottom: 54 };
-  state.realizedIncomeChartEvents = [];
-  if (!points.length) {
-    svg.innerHTML = `
-      <rect width="${width}" height="${height}" rx="18" class="chart-empty-bg"></rect>
-      <text x="${width / 2}" y="${height / 2 - 8}" text-anchor="middle" class="chart-empty-title">No wealth history yet</text>
-      <text x="${width / 2}" y="${height / 2 + 18}" text-anchor="middle" class="chart-empty-subtitle">Import broker transactions or set an opening balance to build the timeline.</text>
-    `;
-    return;
-  }
-  const valueKey = state.realizedIncomeMode === "investment_growth" ? "investmentGrowthBase" : "totalValueBase";
-  const plotted = points.map((point) => ({
-    ...point,
-    chartKind: "wealth_point",
-    chartValue: Number(point[valueKey] ?? point.totalValueBase),
-    timestamp: Date.parse(`${point.date}T00:00:00Z`)
-  })).filter((point) => Number.isFinite(point.chartValue) && Number.isFinite(point.timestamp));
-  if (!plotted.length) return;
+  const values = plotted.flatMap((point) => valueKeys.map((key) => Number(point[key])).filter(Number.isFinite));
+  if (options.includeZero) values.push(0);
   const minTime = Math.min(...plotted.map((point) => point.timestamp));
   const maxTime = Math.max(...plotted.map((point) => point.timestamp));
-  const values = plotted.map((point) => point.chartValue);
   const minValueRaw = Math.min(...values);
   const maxValueRaw = Math.max(...values);
   const spanValue = maxValueRaw - minValueRaw || Math.max(1, Math.abs(maxValueRaw || minValueRaw || 1));
@@ -5098,139 +5064,259 @@ function renderWealthChart() {
   const maxY = maxValueRaw + spanValue * 0.12;
   const chartWidth = width - pad.left - pad.right;
   const chartHeight = height - pad.top - pad.bottom;
-  const xFor = (timestamp) => pad.left + ((timestamp - minTime) / Math.max(1, maxTime - minTime)) * chartWidth;
-  const yFor = (value) => pad.top + ((maxY - value) / Math.max(1, maxY - minY)) * chartHeight;
-  const pointPath = plotted.map((point, index) => `${index === 0 ? "M" : "L"} ${xFor(point.timestamp).toFixed(2)} ${yFor(point.chartValue).toFixed(2)}`).join(" ");
-  const areaPath = `${pointPath} L ${xFor(plotted.at(-1).timestamp).toFixed(2)} ${height - pad.bottom} L ${xFor(plotted[0].timestamp).toFixed(2)} ${height - pad.bottom} Z`;
+  return {
+    width,
+    height,
+    pad,
+    minTime,
+    maxTime,
+    minY,
+    maxY,
+    xFor: (timestamp) => pad.left + ((timestamp - minTime) / Math.max(1, maxTime - minTime)) * chartWidth,
+    yFor: (value) => pad.top + ((maxY - value) / Math.max(1, maxY - minY)) * chartHeight
+  };
+}
+
+function chartAxes(scales, plotted, baseCurrency) {
+  const { width, height, pad, minTime, maxTime, minY, maxY, xFor, yFor } = scales;
   const yTicks = Array.from({ length: 5 }, (_, index) => minY + ((maxY - minY) * index) / 4);
-  const xTickCount = Math.min(6, plotted.length);
+  const xTickCount = Math.min(6, Math.max(2, plotted.length));
   const xTicks = Array.from({ length: xTickCount }, (_, index) => {
     const value = minTime + ((maxTime - minTime) * index) / Math.max(1, xTickCount - 1);
     return new Date(value);
   });
-  const chartEvents = [...plotted];
-  const eventShapes = (payload?.events || [])
-    .filter((event) => event.date >= payload.startDate && event.date <= plotted.at(-1).date)
+  return `
+    ${yTicks.map((tick) => {
+      const y = yFor(tick);
+      return `
+        <line x1="${pad.left}" x2="${width - pad.right}" y1="${y}" y2="${y}" class="grid-line"></line>
+        <text x="${pad.left - 12}" y="${y + 4}" text-anchor="end" class="axis-label">${money(tick, baseCurrency)}</text>
+      `;
+    }).join("")}
+    ${xTicks.map((tick) => {
+      const x = xFor(tick.getTime());
+      return `<text x="${x}" y="${height - 18}" text-anchor="middle" class="axis-label">${tick.toISOString().slice(0, 10)}</text>`;
+    }).join("")}
+  `;
+}
+
+function linePath(plotted, valueKey, scales) {
+  return plotted.map((point, index) => `${index === 0 ? "M" : "L"} ${scales.xFor(point.timestamp).toFixed(2)} ${scales.yFor(point[valueKey]).toFixed(2)}`).join(" ");
+}
+
+function areaPath(plotted, valueKey, scales) {
+  const path = linePath(plotted, valueKey, scales);
+  if (!path) return "";
+  const { height, pad, xFor } = scales;
+  return `${path} L ${xFor(plotted.at(-1).timestamp).toFixed(2)} ${height - pad.bottom} L ${xFor(plotted[0].timestamp).toFixed(2)} ${height - pad.bottom} Z`;
+}
+
+function segmentedLinePaths(plotted, valueKey, scales, maxGapDays = 1.5) {
+  const segments = [];
+  let current = [];
+  for (const point of plotted) {
+    const previous = current.at(-1);
+    const gapDays = previous ? (point.timestamp - previous.timestamp) / 86400000 : 0;
+    if (previous && gapDays > maxGapDays) {
+      if (current.length > 1) segments.push(current);
+      current = [point];
+    } else {
+      current.push(point);
+    }
+  }
+  if (current.length > 1) segments.push(current);
+  return segments.map((segment) => linePath(segment, valueKey, scales));
+}
+
+function renderEmptyIncomeChart(title, subtitle) {
+  const svg = $("#realizedIncomeChart");
+  if (!svg) return;
+  state.realizedIncomeChartEvents = [];
+  svg.innerHTML = `
+    <rect width="900" height="300" rx="18" class="chart-empty-bg"></rect>
+    <text x="450" y="142" text-anchor="middle" class="chart-empty-title">${escapeHtml(title)}</text>
+    <text x="450" y="170" text-anchor="middle" class="chart-empty-subtitle">${escapeHtml(subtitle)}</text>
+  `;
+}
+
+function renderRealizedGrowthChart() {
+  const svg = $("#realizedIncomeChart");
+  const payload = state.portfolioWealth;
+  if (!svg) return;
+  const baseCurrency = payload?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  const points = (payload?.realizedGrowth?.points || []).map((point) => ({
+    ...point,
+    chartKind: "realized_growth_point",
+    chartValue: Number(point.cumulativeRealizedBase),
+    timestamp: Date.parse(`${point.date}T00:00:00Z`)
+  })).filter((point) => Number.isFinite(point.chartValue) && Number.isFinite(point.timestamp));
+  if (!points.length) {
+    renderEmptyIncomeChart("No realized entries", "Sales, CSV dividends, and manual income will build this line.");
+    return;
+  }
+  const scales = incomeChartScales(points, ["chartValue"], { includeZero: true });
+  const chartEvents = [...points];
+  const eventShapes = (payload?.realizedGrowth?.events || [])
+    .filter((event) => event.date >= payload.startDate && event.date <= points.at(-1).date)
     .map((event) => {
-      const anchor = closestWealthPoint(plotted, event.date);
+      const anchor = closestChartPoint(points, event.date);
       if (!anchor) return "";
       const eventWithKind = {
         ...event,
-        chartKind: "wealth_event",
-        chartValue: anchor.chartValue,
-        totalValueBase: anchor.totalValueBase,
-        holdingsValueBase: anchor.holdingsValueBase,
-        cashValueBase: anchor.cashValueBase
+        chartKind: "realized_growth_event",
+        cumulativeRealizedBase: anchor.cumulativeRealizedBase,
+        chartValue: anchor.chartValue
       };
       const index = chartEvents.push(eventWithKind) - 1;
-      return wealthEventShape(eventWithKind, xFor(Date.parse(`${event.date}T00:00:00Z`)), yFor(anchor.chartValue), index);
+      return realizedChartShape(eventWithKind, scales.xFor(Date.parse(`${event.date}T00:00:00Z`)), scales.yFor(anchor.chartValue), index);
     }).join("");
   state.realizedIncomeChartEvents = chartEvents;
-  const first = plotted[0];
-  const last = plotted.at(-1);
-  const hoverPoints = plotted.map((point, index) => {
-    const x = xFor(point.timestamp);
-    const y = yFor(point.chartValue);
+  const first = points[0];
+  const last = points.at(-1);
+  const pointPath = linePath(points, "chartValue", scales);
+  const fillPath = areaPath(points, "chartValue", scales);
+  const hoverPoints = points.map((point, index) => {
+    const x = scales.xFor(point.timestamp);
+    const y = scales.yFor(point.chartValue);
     return `
       <g class="wealth-point-group">
-        <line x1="${x}" x2="${x}" y1="${pad.top}" y2="${height - pad.bottom}" class="wealth-crosshair"></line>
+        <line x1="${x}" x2="${x}" y1="${scales.pad.top}" y2="${scales.height - scales.pad.bottom}" class="wealth-crosshair"></line>
         <circle class="wealth-hit" data-income-point="${index}" cx="${x}" cy="${y}" r="10" aria-label="${escapeHtml(point.date)} ${money(point.chartValue, baseCurrency)}"></circle>
       </g>
     `;
   }).join("");
   svg.innerHTML = `
-    <rect width="${width}" height="${height}" rx="18" class="chart-empty-bg"></rect>
-    ${yTicks.map((tick) => {
-      const y = yFor(tick);
-      return `
-        <line x1="${pad.left}" x2="${width - pad.right}" y1="${y}" y2="${y}" class="grid-line"></line>
-        <text x="${pad.left - 12}" y="${y + 4}" text-anchor="end" class="axis-label">${money(tick, baseCurrency)}</text>
-      `;
-    }).join("")}
-    ${xTicks.map((tick) => {
-      const x = xFor(tick.getTime());
-      return `<text x="${x}" y="${height - 18}" text-anchor="middle" class="axis-label">${tick.toISOString().slice(0, 10)}</text>`;
-    }).join("")}
-    <path d="${areaPath}" class="wealth-area"></path>
+    <rect width="${scales.width}" height="${scales.height}" rx="18" class="chart-empty-bg"></rect>
+    <line x1="${scales.pad.left}" x2="${scales.width - scales.pad.right}" y1="${scales.yFor(0)}" y2="${scales.yFor(0)}" class="zero-line"></line>
+    ${chartAxes(scales, points, baseCurrency)}
+    <path d="${fillPath}" class="wealth-area realized-growth-area"></path>
     <path d="${pointPath}" class="wealth-line"></path>
-    <circle cx="${xFor(first.timestamp)}" cy="${yFor(first.chartValue)}" r="4.5" class="wealth-anchor"></circle>
-    <circle cx="${xFor(last.timestamp)}" cy="${yFor(last.chartValue)}" r="5.5" class="wealth-anchor current"></circle>
-    <text x="${xFor(first.timestamp) + 8}" y="${Math.max(16, yFor(first.chartValue) - 10)}" class="wealth-label">${money(first.chartValue, baseCurrency)}</text>
-    <text x="${Math.min(width - 170, xFor(last.timestamp) - 154)}" y="${Math.max(16, yFor(last.chartValue) - 12)}" class="wealth-label current">${money(last.chartValue, baseCurrency)}</text>
+    <circle cx="${scales.xFor(first.timestamp)}" cy="${scales.yFor(first.chartValue)}" r="4.5" class="wealth-anchor"></circle>
+    <circle cx="${scales.xFor(last.timestamp)}" cy="${scales.yFor(last.chartValue)}" r="5.5" class="wealth-anchor current"></circle>
+    <text x="${scales.xFor(first.timestamp) + 8}" y="${Math.max(16, scales.yFor(first.chartValue) - 10)}" class="wealth-label">${money(first.chartValue, baseCurrency)}</text>
+    <text x="${Math.min(scales.width - 170, scales.xFor(last.timestamp) - 154)}" y="${Math.max(16, scales.yFor(last.chartValue) - 12)}" class="wealth-label current">${money(last.chartValue, baseCurrency)}</text>
     ${eventShapes}
     ${hoverPoints}
   `;
 }
 
-function renderRealizedIncomeChart() {
+function renderBookValueChart() {
   const svg = $("#realizedIncomeChart");
+  const payload = state.portfolioWealth;
   if (!svg) return;
-  if (state.realizedIncomeMode === "portfolio_value" || state.realizedIncomeMode === "investment_growth") {
-    renderWealthChart();
-    return;
-  }
-  const payload = state.realizedIncome;
   const baseCurrency = payload?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
-  const sourceEvents = (payload?.events || []).filter((event) => Number.isFinite(Number(event.amountBase)));
-  const width = 900;
-  const height = 300;
-  const pad = { left: 92, right: 28, top: 28, bottom: 54 };
-  state.realizedIncomeChartEvents = [];
-  if (!sourceEvents.length) {
-    svg.innerHTML = `
-      <rect width="${width}" height="${height}" rx="18" class="chart-empty-bg"></rect>
-      <text x="${width / 2}" y="${height / 2 - 8}" text-anchor="middle" class="chart-empty-title">No realized entries</text>
-      <text x="${width / 2}" y="${height / 2 + 18}" text-anchor="middle" class="chart-empty-subtitle">Sales, CSV dividends, and manual income will appear here.</text>
-    `;
+  const points = (payload?.bookValue?.points || []).map((point) => ({
+    ...point,
+    chartKind: "book_value_point",
+    bookValueBase: Number(point.bookValueBase),
+    netCapitalContributedBase: Number(point.netCapitalContributedBase || 0),
+    timestamp: Date.parse(`${point.date}T00:00:00Z`)
+  })).filter((point) => Number.isFinite(point.bookValueBase) && Number.isFinite(point.timestamp));
+  if (!points.length) {
+    renderEmptyIncomeChart("No book-value history", "Import transactions or set an opening balance to build cost-basis history.");
     return;
   }
-  let running = 0;
-  const plotted = sourceEvents.map((event) => {
-    const amount = Number(event.amountBase) || 0;
-    running += amount;
-    return {
-      ...event,
-      chartKind: "realized_event",
-      chartValue: state.realizedIncomeMode === "cumulative_income" ? running : amount,
-      timestamp: Date.parse(`${event.date}T00:00:00Z`)
-    };
-  });
-  state.realizedIncomeChartEvents = plotted;
-  const minTime = Math.min(...plotted.map((event) => event.timestamp));
-  const maxTime = Math.max(...plotted.map((event) => event.timestamp));
-  const rawValues = plotted.map((event) => event.chartValue);
-  const minValue = Math.min(0, ...rawValues);
-  const maxValue = Math.max(0, ...rawValues);
-  const spanValue = maxValue - minValue || Math.max(1, Math.abs(maxValue || minValue || 1));
-  const minY = minValue - spanValue * 0.12;
-  const maxY = maxValue + spanValue * 0.12;
-  const chartWidth = width - pad.left - pad.right;
-  const chartHeight = height - pad.top - pad.bottom;
-  const xFor = (timestamp) => pad.left + ((timestamp - minTime) / Math.max(1, maxTime - minTime)) * chartWidth;
-  const yFor = (value) => pad.top + ((maxY - value) / Math.max(1, maxY - minY)) * chartHeight;
-  const yTicks = Array.from({ length: 5 }, (_, index) => minY + ((maxY - minY) * index) / 4);
-  const xTicks = Array.from({ length: Math.min(5, plotted.length) }, (_, index) => {
-    const value = minTime + ((maxTime - minTime) * index) / Math.max(1, Math.min(5, plotted.length) - 1);
-    return new Date(value);
-  });
-  const zeroY = yFor(0);
-  const shapes = plotted.map((event, index) => realizedChartShape(event, xFor(event.timestamp), yFor(event.chartValue), index)).join("");
+  const scales = incomeChartScales(points, ["bookValueBase", "netCapitalContributedBase"], { includeZero: true });
+  const chartEvents = [...points];
+  const eventShapes = (payload?.bookValue?.events || [])
+    .filter((event) => event.date >= payload.startDate && event.date <= points.at(-1).date)
+    .map((event) => {
+      const anchor = closestChartPoint(points, event.date);
+      if (!anchor) return "";
+      const eventWithKind = {
+        ...event,
+        chartKind: "book_value_event",
+        bookValueBase: anchor.bookValueBase,
+        cashValueBase: anchor.cashValueBase,
+        remainingCostBasisBase: anchor.remainingCostBasisBase,
+        netCapitalContributedBase: anchor.netCapitalContributedBase
+      };
+      const index = chartEvents.push(eventWithKind) - 1;
+      return wealthEventShape(eventWithKind, scales.xFor(Date.parse(`${event.date}T00:00:00Z`)), scales.yFor(anchor.bookValueBase), index);
+    }).join("");
+  state.realizedIncomeChartEvents = chartEvents;
+  const bookPath = linePath(points, "bookValueBase", scales);
+  const contributionPath = linePath(points, "netCapitalContributedBase", scales);
+  const fillPath = areaPath(points, "bookValueBase", scales);
+  const hoverPoints = points.map((point, index) => {
+    const x = scales.xFor(point.timestamp);
+    const y = scales.yFor(point.bookValueBase);
+    return `
+      <g class="wealth-point-group">
+        <line x1="${x}" x2="${x}" y1="${scales.pad.top}" y2="${scales.height - scales.pad.bottom}" class="wealth-crosshair"></line>
+        <circle class="wealth-hit" data-income-point="${index}" cx="${x}" cy="${y}" r="10" aria-label="${escapeHtml(point.date)} ${money(point.bookValueBase, baseCurrency)}"></circle>
+      </g>
+    `;
+  }).join("");
   svg.innerHTML = `
-    <rect width="${width}" height="${height}" rx="18" class="chart-empty-bg"></rect>
-    <line x1="${pad.left}" x2="${width - pad.right}" y1="${zeroY}" y2="${zeroY}" class="zero-line"></line>
-    ${yTicks.map((tick) => {
-      const y = yFor(tick);
-      return `
-        <line x1="${pad.left}" x2="${width - pad.right}" y1="${y}" y2="${y}" class="grid-line"></line>
-        <text x="${pad.left - 12}" y="${y + 4}" text-anchor="end" class="axis-label">${money(tick, baseCurrency)}</text>
-      `;
-    }).join("")}
-    ${xTicks.map((tick) => {
-      const x = xFor(tick.getTime());
-      return `<text x="${x}" y="${height - 18}" text-anchor="middle" class="axis-label">${tick.toISOString().slice(0, 10)}</text>`;
-    }).join("")}
-    ${shapes}
+    <rect width="${scales.width}" height="${scales.height}" rx="18" class="chart-empty-bg"></rect>
+    <line x1="${scales.pad.left}" x2="${scales.width - scales.pad.right}" y1="${scales.yFor(0)}" y2="${scales.yFor(0)}" class="zero-line"></line>
+    ${chartAxes(scales, points, baseCurrency)}
+    <path d="${fillPath}" class="wealth-area book-value-area"></path>
+    <path d="${bookPath}" class="wealth-line"></path>
+    <path d="${contributionPath}" class="wealth-line secondary"></path>
+    ${eventShapes}
+    ${hoverPoints}
   `;
+}
+
+function renderSnapshotChart() {
+  const svg = $("#realizedIncomeChart");
+  const payload = state.portfolioWealth;
+  if (!svg) return;
+  const baseCurrency = payload?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  const points = (payload?.actualPortfolioValue?.points || []).map((point) => ({
+    ...point,
+    chartKind: "snapshot_point",
+    chartValue: Number(point.totalValueBase),
+    timestamp: Date.parse(`${point.date}T00:00:00Z`)
+  })).filter((point) => Number.isFinite(point.chartValue) && Number.isFinite(point.timestamp));
+  if (!points.length) {
+    renderEmptyIncomeChart("No market-value snapshots yet", "Refresh prices to save a daily snapshot, or add a broker statement snapshot below.");
+    return;
+  }
+  const scales = incomeChartScales(points, ["chartValue"]);
+  state.realizedIncomeChartEvents = [...points];
+  const lineSegments = segmentedLinePaths(points, "chartValue", scales).map((path) => `<path d="${path}" class="wealth-line"></path>`).join("");
+  const markers = points.map((point, index) => {
+    const x = scales.xFor(point.timestamp);
+    const y = scales.yFor(point.chartValue);
+    const cls = point.manual ? "snapshot-marker manual" : "snapshot-marker auto";
+    return point.manual
+      ? `<rect class="${cls}" data-income-point="${index}" x="${x - 6}" y="${y - 6}" width="12" height="12" transform="rotate(45 ${x} ${y})"></rect>`
+      : `<circle class="${cls}" data-income-point="${index}" cx="${x}" cy="${y}" r="5.5"></circle>`;
+  }).join("");
+  const hoverPoints = points.map((point, index) => {
+    const x = scales.xFor(point.timestamp);
+    const y = scales.yFor(point.chartValue);
+    return `
+      <g class="wealth-point-group">
+        <line x1="${x}" x2="${x}" y1="${scales.pad.top}" y2="${scales.height - scales.pad.bottom}" class="wealth-crosshair"></line>
+        <circle class="wealth-hit" data-income-point="${index}" cx="${x}" cy="${y}" r="11" aria-label="${escapeHtml(point.date)} ${money(point.chartValue, baseCurrency)}"></circle>
+      </g>
+    `;
+  }).join("");
+  const first = points[0];
+  const last = points.at(-1);
+  svg.innerHTML = `
+    <rect width="${scales.width}" height="${scales.height}" rx="18" class="chart-empty-bg"></rect>
+    ${chartAxes(scales, points, baseCurrency)}
+    ${lineSegments}
+    ${markers}
+    <text x="${scales.xFor(first.timestamp) + 8}" y="${Math.max(16, scales.yFor(first.chartValue) - 10)}" class="wealth-label">${money(first.chartValue, baseCurrency)}</text>
+    <text x="${Math.min(scales.width - 170, scales.xFor(last.timestamp) - 154)}" y="${Math.max(16, scales.yFor(last.chartValue) - 12)}" class="wealth-label current">${money(last.chartValue, baseCurrency)}</text>
+    ${hoverPoints}
+  `;
+}
+
+function renderRealizedIncomeChart() {
+  if (state.realizedIncomeMode === "book_value") {
+    renderBookValueChart();
+  } else if (state.realizedIncomeMode === "portfolio_value") {
+    renderSnapshotChart();
+  } else {
+    renderRealizedGrowthChart();
+  }
 }
 
 function renderOpeningBalanceForm() {
@@ -5253,6 +5339,111 @@ function renderOpeningBalanceForm() {
   }
 }
 
+function renderRealizedIncomeNotice() {
+  const node = $("#realizedIncomeNotice");
+  if (!node) return;
+  const wealth = state.portfolioWealth || {};
+  const warnings = wealth.dataQuality?.warnings || [];
+  const notices = [];
+  if (state.realizedIncomeMode === "realized_growth" && !(wealth.actualPortfolioValue?.points || []).length) {
+    notices.push("Historical market prices are incomplete. Showing transaction-based results.");
+  }
+  if (state.realizedIncomeMode === "book_value") {
+    notices.push(wealth.bookValue?.label || "Book value - does not include historical unrealized market gains.");
+  }
+  if (state.realizedIncomeMode === "portfolio_value") {
+    notices.push("Actual Portfolio Value uses saved snapshots only. Dates without snapshots are not connected or estimated.");
+  }
+  for (const warning of warnings) {
+    if (!notices.includes(warning)) notices.push(warning);
+  }
+  node.textContent = notices.slice(0, 2).join(" ");
+  node.hidden = !node.textContent;
+}
+
+function resetManualSnapshotForm() {
+  const form = $("#manualSnapshotForm");
+  if (!form) return;
+  form.reset();
+  form.dataset.snapshotId = "";
+  if (form.elements.currency) form.elements.currency.value = state.dashboard?.user?.baseCurrency || "AUD";
+  const submit = $("#manualSnapshotSubmit");
+  if (submit) submit.textContent = "Save Snapshot";
+  const cancel = $("#manualSnapshotCancel");
+  if (cancel) cancel.hidden = true;
+}
+
+function renderManualSnapshotForm() {
+  const form = $("#manualSnapshotForm");
+  if (!form) return;
+  const active = document.activeElement;
+  if (!form.contains(active) && !form.dataset.snapshotId && form.elements.currency) {
+    form.elements.currency.value = state.dashboard?.user?.baseCurrency || "AUD";
+  }
+}
+
+function renderPortfolioSnapshotsTable() {
+  const node = $("#portfolioSnapshotsTable");
+  if (!node) return;
+  const snapshots = state.portfolioWealth?.snapshots || [];
+  const baseCurrency = state.portfolioWealth?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  if (!snapshots.length) {
+    node.innerHTML = `
+      <div class="empty-state compact">
+        <strong>No saved market-value snapshots yet</strong>
+        <span>Refresh prices to save today's automatic snapshot, or enter an old broker statement above.</span>
+      </div>
+    `;
+    return;
+  }
+  node.innerHTML = snapshots.map((snapshot) => {
+    const sourceLabel = snapshot.manual ? "Manual broker snapshot" : "Automatic app snapshot";
+    const actions = snapshot.manual
+      ? `
+        <div class="button-row">
+          <button class="button secondary" data-edit-portfolio-snapshot="${escapeHtml(snapshot.id)}" type="button">Edit</button>
+          <button class="button danger" data-delete-portfolio-snapshot="${escapeHtml(snapshot.id)}" type="button">Delete</button>
+        </div>
+      `
+      : `<span class="muted">Auto</span>`;
+    return `
+      <div class="compact-row snapshot-row">
+        <div>
+          <strong>${escapeHtml(snapshot.date)}</strong>
+          <br><span class="muted">${escapeHtml(sourceLabel)} | ${escapeHtml(snapshot.source || snapshot.provider || "-")}</span>
+        </div>
+        <div>Holdings<br><strong>${money(snapshot.holdingsValueBase, baseCurrency)}</strong></div>
+        <div>Cash<br><strong>${money(snapshot.cashValueBase, baseCurrency)}</strong></div>
+        <div>Total<br><strong>${money(snapshot.totalValueBase, baseCurrency)}</strong></div>
+        <div class="muted">${snapshot.dataCoveragePercent == null ? "n/a" : `${number(snapshot.dataCoveragePercent, 2)}% coverage`}</div>
+        ${actions}
+      </div>
+    `;
+  }).join("");
+}
+
+function editPortfolioSnapshot(snapshotId) {
+  const snapshot = (state.portfolioWealth?.snapshots || []).find((item) => String(item.id) === String(snapshotId));
+  if (!snapshot || !snapshot.manual) {
+    toast("Manual snapshot not found");
+    return;
+  }
+  const form = $("#manualSnapshotForm");
+  if (!form) return;
+  form.dataset.snapshotId = snapshot.id;
+  form.elements.date.value = snapshot.date || "";
+  form.elements.holdingsValue.value = snapshot.holdingsValueBase ?? "";
+  form.elements.cashValue.value = snapshot.cashValueBase ?? "";
+  form.elements.currency.value = state.portfolioWealth?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  form.elements.source.value = snapshot.source || "";
+  form.elements.notes.value = snapshot.notes || "";
+  const submit = $("#manualSnapshotSubmit");
+  if (submit) submit.textContent = "Save Changes";
+  const cancel = $("#manualSnapshotCancel");
+  if (cancel) cancel.hidden = false;
+  form.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
 function renderRealizedIncome() {
   if (!state.dashboard) return;
   renderSegmentButtons($("#realizedIncomeRanges"), REALIZED_RANGES, state.realizedIncomeRange, "realized-range");
@@ -5265,20 +5456,29 @@ function renderRealizedIncome() {
   const payload = state.realizedIncome;
   const events = payload?.events || [];
   renderRealizedIncomeSummary();
+  renderRealizedIncomeNotice();
   renderOpeningBalanceForm();
+  renderManualSnapshotForm();
+  renderPortfolioSnapshotsTable();
   renderRealizedIncomeChart();
   const legend = $("#realizedIncomeLegend");
   if (legend) {
-    const wealthMode = state.realizedIncomeMode === "portfolio_value" || state.realizedIncomeMode === "investment_growth";
-    const entries = wealthMode
+    const entries = state.realizedIncomeMode === "book_value"
       ? [
-        ["line", "Portfolio value"],
-        ["sale", "Sale gain/loss"],
+        ["line", "Book value"],
+        ["neutral", "Net contributed capital"],
+        ["sale", "Sale"],
         ["dividend", "Dividend"],
-        ["external", "External income"],
-        ["neutral", "Buy/deposit/cash"]
+        ["external", "Cash income/expense"]
       ]
-      : [
+      : state.realizedIncomeMode === "portfolio_value"
+        ? [
+          ["line", "Daily snapshot line"],
+          ["snapshot", "Automatic snapshot"],
+          ["manual", "Manual broker snapshot"]
+        ]
+        : [
+          ["line", "Cumulative realized result"],
         ["sale", "Share sale"],
         ["dividend", "Dividend"],
         ["external", "External income"],
@@ -5345,37 +5545,64 @@ function editExternalIncome(eventId) {
 function realizedTooltipHtml(event) {
   const details = event.details || {};
   const baseCurrency = state.portfolioWealth?.baseCurrency || state.realizedIncome?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
-  if (event.chartKind === "wealth_point") {
+  if (event.chartKind === "realized_growth_point") {
     const rows = [
       ["Date", event.date],
-      ["Total portfolio value", money(event.totalValueBase, baseCurrency)],
-      ["Holdings value", money(event.holdingsValueBase, baseCurrency)],
-      ["Cash value", money(event.cashValueBase, baseCurrency)],
-      ["Net deposits / withdrawals", signedMoney(event.netCapitalContributedBase || 0, baseCurrency)],
-      ["Investment growth", signedMoney(event.investmentGrowthBase || 0, baseCurrency)],
-      ["Realized P&L", signedMoney(event.realizedGainLossBase || 0, baseCurrency)],
-      ["Dividends", signedMoney(event.dividendsBase || 0, baseCurrency)],
-      ["External cash", signedMoney(event.externalCashBase || 0, baseCurrency)]
+      ["Cumulative realized result", signedMoney(event.cumulativeRealizedBase || 0, baseCurrency)],
+      ["Event amount", signedMoney(event.eventAmountBase || 0, baseCurrency)]
     ];
-    if (event.partial || event.estimated) rows.push(["Quality", event.reconciledToDashboard ? "Reconciled estimate" : "Partial history"]);
-    const eventText = (event.events || []).map((item) => `${wealthEventLabel(item)} ${wealthEventAmount(item, baseCurrency)}`).join(" | ");
+    const eventText = (event.events || []).map((item) => `${realizedEventLabel(item)} ${signedMoney(item.amountBase || 0, baseCurrency)} ${item.ticker || item.source || ""}`).join(" | ");
     if (eventText) rows.push(["Events", eventText]);
-    if (event.missingTickers?.length) rows.push(["Missing prices", event.missingTickers.join(", ")]);
     return `
-      <strong>${state.realizedIncomeMode === "investment_growth" ? "Investment Growth" : "Portfolio Value"}</strong>
+      <strong>Realized Growth</strong>
       ${rows.map(([label, value]) => `
         <div><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>
       `).join("")}
     `;
   }
-  if (event.chartKind === "wealth_event") {
+  if (event.chartKind === "book_value_point") {
+    const rows = [
+      ["Date", event.date],
+      ["Remaining investment cost basis", money(event.remainingCostBasisBase, baseCurrency)],
+      ["Portfolio cash", money(event.cashValueBase, baseCurrency)],
+      ["Total book value", money(event.bookValueBase, baseCurrency)],
+      ["Net contributed capital", signedMoney(event.netCapitalContributedBase || 0, baseCurrency)]
+    ];
+    if (event.estimated) rows.push(["Quality", "Includes cash reconciliation"]);
+    return `
+      <strong>Book Value</strong>
+      ${rows.map(([label, value]) => `
+        <div><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>
+      `).join("")}
+    `;
+  }
+  if (event.chartKind === "snapshot_point") {
+    const rows = [
+      ["Date", event.date],
+      ["Holdings market value", money(event.holdingsValueBase, baseCurrency)],
+      ["Cash", money(event.cashValueBase, baseCurrency)],
+      ["Total portfolio value", money(event.totalValueBase, baseCurrency)],
+      ["Snapshot source", event.manual ? "Manual broker snapshot" : "Automatic app snapshot"],
+      ["Data coverage", event.dataCoveragePercent == null ? "n/a" : `${number(event.dataCoveragePercent, 2)}%`],
+      ["Provider", event.provider || "-"]
+    ];
+    if (event.source) rows.push(["Source", event.source]);
+    if (event.notes) rows.push(["Notes", event.notes]);
+    return `
+      <strong>Actual Portfolio Value</strong>
+      ${rows.map(([label, value]) => `
+        <div><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>
+      `).join("")}
+    `;
+  }
+  if (event.chartKind === "book_value_event") {
     const rows = [
       ["Date", event.date],
       ["Type", wealthEventLabel(event)],
       ["Ticker / source", event.ticker || event.source || "-"],
       ["Cash impact", signedMoney(event.amountBase || 0, baseCurrency)],
-      ["Portfolio value", money(event.totalValueBase, baseCurrency)],
-      ["Holdings / cash", `${money(event.holdingsValueBase, baseCurrency)} / ${money(event.cashValueBase, baseCurrency)}`]
+      ["Book value", money(event.bookValueBase, baseCurrency)],
+      ["Cost basis / cash", `${money(event.remainingCostBasisBase, baseCurrency)} / ${money(event.cashValueBase, baseCurrency)}`]
     ];
     if (event.type === "share_sale") {
       rows.push(
@@ -5415,6 +5642,32 @@ function realizedTooltipHtml(event) {
       ${rows.map(([label, value]) => `
         <div><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>
       `).join("")}
+      `;
+  }
+  if (event.chartKind === "realized_growth_event") {
+    const rows = [
+      ["Date", event.date],
+      ["Event type", realizedEventLabel(event)],
+      ["Ticker / source", realizedEventSource(event)],
+      ["Event amount", signedMoney(event.amountBase || 0, baseCurrency)],
+      ["Cumulative realized result", signedMoney(event.cumulativeRealizedBase || 0, baseCurrency)]
+    ];
+    if ((event.transactionType || event.type) === "dividend") rows.push(["Dividend amount", signedMoney(event.amountBase || 0, baseCurrency)]);
+    if ((event.transactionType || event.type) === "share_sale") {
+      rows.push(
+        ["Quantity", number(details.quantity, 4)],
+        ["Sale price", money(details.salePrice, details.saleCurrency)],
+        ["Cost basis", money(details.costBasisBase, baseCurrency)],
+        ["Proceeds", money(details.proceedsBase, baseCurrency)],
+        ["Gain / loss", signedMoney(details.gainLossBase, baseCurrency)]
+      );
+    }
+    if (details.notes || details.description) rows.push(["Notes", details.notes || details.description]);
+    return `
+      <strong>${escapeHtml(realizedEventLabel(event))}</strong>
+      ${rows.map(([label, value]) => `
+        <div><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b></div>
+      `).join("")}
     `;
   }
   const rows = [
@@ -5424,7 +5677,8 @@ function realizedTooltipHtml(event) {
     ["Original", money(event.amountOriginal, event.currency)],
     ["Converted", event.conversionUnavailable ? "FX unavailable" : signedMoney(event.amountBase, baseCurrency)]
   ];
-  if (event.transactionType === "share_sale") {
+  const kind = event.transactionType || event.type;
+  if (kind === "share_sale") {
     rows.push(
       ["Quantity", number(details.quantity, 4)],
       ["Sale price", money(details.salePrice, details.saleCurrency)],
@@ -5435,14 +5689,14 @@ function realizedTooltipHtml(event) {
       ["Fees / tax", `${money(details.fees || 0, baseCurrency)} / ${money(details.taxes || 0, baseCurrency)}`]
     );
   }
-  if (event.transactionType === "dividend") {
+  if (kind === "dividend") {
     rows.push(
       ["Quantity", number(details.eligibleQuantity, 4)],
       ["Per share", money(details.amountPerShare, event.currency)],
       ["Ex / pay date", `${details.exDate || "-"} / ${details.payDate || "-"}`]
     );
   }
-  if (event.transactionType === "external_income" || event.transactionType === "external_expense") {
+  if (kind === "external_income" || kind === "external_expense") {
     rows.push(
       ["Category", details.category || "-"],
       ["Gross", money(details.grossAmount, event.currency)],
@@ -5797,6 +6051,18 @@ document.addEventListener("submit", async (event) => {
         body: JSON.stringify(body)
       });
       toast("Opening balance saved");
+      await loadDashboard();
+      await loadRealizedIncome();
+    }
+    if (form.id === "manualSnapshotForm") {
+      const body = Object.fromEntries(new FormData(form));
+      const snapshotId = form.dataset.snapshotId;
+      await api(snapshotId ? `/api/portfolio-wealth/snapshots/${encodeURIComponent(snapshotId)}` : "/api/portfolio-wealth/snapshots", {
+        method: snapshotId ? "PATCH" : "POST",
+        body: JSON.stringify(body)
+      });
+      toast(snapshotId ? "Snapshot updated" : "Snapshot saved");
+      resetManualSnapshotForm();
       await loadDashboard();
       await loadRealizedIncome();
     }
@@ -6272,6 +6538,23 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "cancelExternalIncomeEdit") {
       resetExternalIncomeForm();
+      return;
+    }
+    if (action === "cancelSnapshotEdit") {
+      resetManualSnapshotForm();
+      return;
+    }
+    if (target.dataset.editPortfolioSnapshot) {
+      editPortfolioSnapshot(target.dataset.editPortfolioSnapshot);
+      return;
+    }
+    if (target.dataset.deletePortfolioSnapshot) {
+      const confirmed = window.confirm("Delete this manual broker snapshot? Automatic snapshots and transactions stay untouched.");
+      if (!confirmed) return;
+      await api(`/api/portfolio-wealth/snapshots/${encodeURIComponent(target.dataset.deletePortfolioSnapshot)}`, { method: "DELETE" });
+      resetManualSnapshotForm();
+      await loadRealizedIncome();
+      toast("Snapshot deleted");
       return;
     }
     if (target.dataset.editExternalIncome) {

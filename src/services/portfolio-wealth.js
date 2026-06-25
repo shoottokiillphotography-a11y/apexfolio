@@ -1,32 +1,19 @@
 import { getDb } from "../db.js";
-import { InputError, nowIso, roundMoney, roundPercent, toNumber } from "../utils.js";
+import { id, InputError, nowIso, roundMoney, roundPercent, roundShares, toNumber } from "../utils.js";
 import { calculatePortfolio } from "./calculations.js";
 import { convertAmount, getExchangeRate } from "./currency.js";
-import { fetchPriceHistory, PERFORMANCE_RANGES } from "./performance.js";
 
 const OPENING_BALANCE_KEY = "portfolio_wealth_opening_balance";
 const RANGE_FILTERS = new Set(["month", "ytd", "1y", "3y", "5y", "all"]);
-const HISTORY_CONCURRENCY = 5;
+const SNAPSHOT_SOURCE_AUTO = "auto";
+const SNAPSHOT_SOURCE_MANUAL = "manual";
 
 function toDateOnly(value) {
   return String(value || "").slice(0, 10);
 }
 
-function dateAtUtc(dateText) {
-  const [year, month, day] = String(dateText || "").slice(0, 10).split("-").map(Number);
-  return new Date(Date.UTC(year || 1970, (month || 1) - 1, day || 1));
-}
-
 function isoDate(date) {
   return date.toISOString().slice(0, 10);
-}
-
-function shiftDate({ months = 0, years = 0 } = {}) {
-  const date = new Date();
-  date.setUTCHours(0, 0, 0, 0);
-  if (years) date.setUTCFullYear(date.getUTCFullYear() - years);
-  if (months) date.setUTCMonth(date.getUTCMonth() - months);
-  return isoDate(date);
 }
 
 function normalizeRange(input) {
@@ -34,34 +21,53 @@ function normalizeRange(input) {
   return RANGE_FILTERS.has(range) ? range : "all";
 }
 
-function performanceRange(range) {
-  return range === "month" ? "1mo" : range;
-}
-
-function startDateForRange(range, firstInvestmentDate) {
-  const today = isoDate(new Date());
+function rangeStart(range, firstInvestmentDate) {
+  const now = new Date();
+  now.setUTCHours(0, 0, 0, 0);
+  const today = isoDate(now);
   if (range === "all") return firstInvestmentDate || today;
-  let start = firstInvestmentDate || today;
-  if (range === "month") start = shiftDate({ months: 1 });
-  if (range === "ytd") start = `${new Date().getUTCFullYear()}-01-01`;
-  if (range === "1y") start = shiftDate({ years: 1 });
-  if (range === "3y") start = shiftDate({ years: 3 });
-  if (range === "5y") start = shiftDate({ years: 5 });
+  if (range === "month") {
+    now.setUTCMonth(now.getUTCMonth() - 1);
+  } else if (range === "ytd") {
+    now.setUTCMonth(0, 1);
+  } else {
+    const years = range === "1y" ? 1 : range === "3y" ? 3 : range === "5y" ? 5 : 0;
+    now.setUTCFullYear(now.getUTCFullYear() - years);
+  }
+  const start = isoDate(now);
   return firstInvestmentDate && start < firstInvestmentDate ? firstInvestmentDate : start;
 }
 
-async function mapWithConcurrency(items, limit, worker) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (nextIndex < items.length) {
-      const currentIndex = nextIndex;
-      nextIndex += 1;
-      results[currentIndex] = await worker(items[currentIndex], currentIndex);
-    }
-  });
-  await Promise.all(workers);
-  return results;
+function assertDate(value, field = "Date") {
+  const date = toDateOnly(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new InputError(`${field} must be YYYY-MM-DD`);
+  return date;
+}
+
+function sum(values) {
+  return values.reduce((total, value) => total + (Number.isFinite(Number(value)) ? Number(value) : 0), 0);
+}
+
+async function convertToBase(amount, currency, baseCurrency) {
+  const numeric = Number(amount);
+  if (!Number.isFinite(numeric)) return null;
+  const from = String(currency || baseCurrency).toUpperCase();
+  const to = String(baseCurrency || from).toUpperCase();
+  if (from === to) return roundMoney(numeric);
+  const converted = await convertAmount(numeric, from, to);
+  return converted?.amount == null ? null : roundMoney(converted.amount);
+}
+
+async function rateFor(fromCurrency, toCurrency, cache) {
+  const from = String(fromCurrency || toCurrency).toUpperCase();
+  const to = String(toCurrency || from).toUpperCase();
+  if (from === to) return 1;
+  const key = `${from}_${to}`;
+  if (!cache.has(key)) {
+    const fx = await getExchangeRate(from, to);
+    cache.set(key, fx.rate);
+  }
+  return cache.get(key);
 }
 
 function getSetting(database, userId, key) {
@@ -84,62 +90,21 @@ function saveSetting(database, userId, key, value) {
   `).run(userId, key, JSON.stringify(value), nowIso());
 }
 
-async function convertToBase(amount, currency, baseCurrency) {
-  const numeric = Number(amount);
-  if (!Number.isFinite(numeric)) return null;
-  const from = String(currency || baseCurrency).toUpperCase();
-  if (from === baseCurrency) return roundMoney(numeric);
-  const converted = await convertAmount(numeric, from, baseCurrency);
-  return converted?.amount == null ? null : roundMoney(converted.amount);
-}
-
-async function rateFor(fromCurrency, toCurrency, cache) {
-  const from = String(fromCurrency || toCurrency).toUpperCase();
-  const to = String(toCurrency || from).toUpperCase();
-  if (from === to) return 1;
-  const key = `${from}_${to}`;
-  if (!cache.has(key)) {
-    const fx = await getExchangeRate(from, to);
-    cache.set(key, fx.rate);
-  }
-  return cache.get(key);
-}
-
-function priceAtOrBefore(history, pointDate, fallback = null) {
-  if (!history?.points?.length) return fallback;
-  let latest = null;
-  for (const point of history.points) {
-    if (point.date <= pointDate) latest = point;
-    else break;
-  }
-  return latest?.value ?? (history.points[0]?.date >= pointDate ? history.points[0]?.value : fallback);
-}
-
-function thinDates(dates, maxPoints) {
-  const sorted = [...new Set(dates)].sort();
-  if (sorted.length <= maxPoints) return sorted;
-  const step = (sorted.length - 1) / (maxPoints - 1);
-  return Array.from({ length: maxPoints }, (_, index) => sorted[Math.round(index * step)])
-    .filter((date, index, rows) => index === 0 || date !== rows[index - 1]);
-}
-
-function eventKey(event) {
-  return `${event.date}|${event.type}|${event.id}`;
-}
-
-function eventOnOrBefore(event, date) {
-  return event.date && event.date <= date;
-}
-
-function currentPriceRows(database) {
-  return new Map(database.prepare("SELECT * FROM market_prices").all().map((row) => [
-    row.ticker,
-    { price: row.price, currency: row.currency, provider: row.provider }
-  ]));
+function parseOpeningBalance(database, userId, baseCurrency, firstInvestmentDate) {
+  const saved = getSetting(database, userId, OPENING_BALANCE_KEY) || {};
+  const amountBase = Number(saved.amountBase);
+  return {
+    date: toDateOnly(saved.date || firstInvestmentDate),
+    amount: Number(saved.amount) || (Number.isFinite(amountBase) ? amountBase : 0),
+    currency: saved.currency || baseCurrency,
+    amountBase: Number.isFinite(amountBase) ? amountBase : 0,
+    notes: saved.notes || "",
+    configured: Number.isFinite(amountBase) && Math.abs(amountBase) > 0
+  };
 }
 
 function loadLots(database, userId) {
-  const lots = database.prepare(`
+  return database.prepare(`
     SELECT l.*, e.name, e.currency AS equity_currency, c.name AS category_name
     FROM holding_lots l
     JOIN equities e ON e.ticker = l.ticker
@@ -151,17 +116,15 @@ function loadLots(database, userId) {
     ticker: lot.ticker,
     name: lot.name,
     categoryName: lot.category_name,
-    original_quantity: Number(lot.original_quantity) || 0,
+    originalQuantity: Number(lot.original_quantity) || 0,
     quantity: Number(lot.quantity) || 0,
-    purchase_price: Number(lot.purchase_price) || 0,
-    purchase_currency: lot.purchase_currency,
-    purchase_date: toDateOnly(lot.purchase_date),
+    purchasePrice: Number(lot.purchase_price) || 0,
+    purchaseCurrency: lot.purchase_currency,
+    purchaseDate: toDateOnly(lot.purchase_date),
     equityCurrency: lot.equity_currency,
     source: lot.source,
-    notes: lot.notes,
-    synthetic: false
+    notes: lot.notes
   }));
-  return lots;
 }
 
 function loadSales(database, userId) {
@@ -180,7 +143,7 @@ function loadSales(database, userId) {
     ticker: row.ticker,
     name: row.name,
     categoryName: row.category_name,
-    lotId: row.lot_id,
+    lotId: row.lot_id || null,
     syntheticLotId: row.lot_id || `external_${row.id}`,
     quantity: Number(row.quantity) || 0,
     salePrice: Number(row.sale_price) || 0,
@@ -200,28 +163,26 @@ function loadSales(database, userId) {
 }
 
 function syntheticLotsFromSales(sales, existingLotIds) {
-  const lots = [];
   const seen = new Set();
+  const lots = [];
   for (const sale of sales) {
     if (sale.lotId && existingLotIds.has(sale.lotId)) continue;
     if (!sale.boughtAt || !sale.buyPrice || !sale.quantity) continue;
-    const key = sale.syntheticLotId;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (seen.has(sale.syntheticLotId)) continue;
+    seen.add(sale.syntheticLotId);
     lots.push({
-      id: key,
+      id: sale.syntheticLotId,
       ticker: sale.ticker,
       name: sale.name,
       categoryName: sale.categoryName,
-      original_quantity: sale.quantity,
+      originalQuantity: sale.quantity,
       quantity: 0,
-      purchase_price: sale.buyPrice,
-      purchase_currency: sale.buyCurrency,
-      purchase_date: sale.boughtAt,
+      purchasePrice: sale.buyPrice,
+      purchaseCurrency: sale.buyCurrency,
+      purchaseDate: sale.boughtAt,
       equityCurrency: sale.equityCurrency,
       source: sale.source || "external",
-      notes: sale.notes,
-      synthetic: true
+      notes: sale.notes
     });
   }
   return lots;
@@ -239,8 +200,8 @@ function salesByLot(sales) {
 }
 
 function quantityHeldAtDate(lot, saleMap, date) {
-  if (!lot.purchase_date || date < lot.purchase_date) return 0;
-  let quantity = Number(lot.original_quantity) || 0;
+  if (!lot.purchaseDate || date < lot.purchaseDate) return 0;
+  let quantity = Number(lot.originalQuantity) || 0;
   for (const sale of saleMap.get(lot.id) || []) {
     if (sale.soldAt && sale.soldAt <= date) quantity -= Number(sale.quantity) || 0;
   }
@@ -267,7 +228,7 @@ function loadDividends(database, userId) {
     details: {
       name: row.name,
       categoryName: row.category_name,
-      eligibleQuantity: row.eligible_quantity,
+      eligibleQuantity: roundShares(row.eligible_quantity),
       amountPerShare: row.amount_per_share,
       exDate: row.ex_date,
       payDate: row.pay_date,
@@ -276,27 +237,36 @@ function loadDividends(database, userId) {
   })).filter((event) => event.date);
 }
 
-async function loadExternalCashEvents(database, userId, baseCurrency) {
+async function loadExternalEvents(database, userId, baseCurrency) {
   const rows = database.prepare(`
     SELECT *
     FROM external_income_events
-    WHERE user_id = ? AND add_to_cash = 1
+    WHERE user_id = ?
     ORDER BY event_date, created_at
   `).all(userId);
   const events = [];
   for (const row of rows) {
-    const cashAmountBase = row.converted_amount_base != null
+    const amountBase = row.converted_amount_base != null
       ? Number(row.converted_amount_base)
-      : await convertToBase(row.cash_applied_amount || row.net_amount, row.cash_applied_currency || row.currency, baseCurrency);
+      : await convertToBase(row.net_amount, row.currency, baseCurrency);
+    const type = row.event_type === "EXPENSE" || Number(row.net_amount) < 0 ? "external_expense" : "external_income";
+    const signedAmountBase = amountBase == null
+      ? null
+      : type === "external_expense"
+        ? -Math.abs(Number(amountBase))
+        : Number(amountBase);
+    const signedOriginalAmount = type === "external_expense"
+      ? -Math.abs(Number(row.net_amount) || 0)
+      : Number(row.net_amount) || 0;
     events.push({
       id: row.id,
       date: toDateOnly(row.event_date),
-      type: row.event_type === "EXPENSE" || Number(row.net_amount) < 0 ? "external_expense" : "external_income",
+      type,
       source: row.source_description,
-      amountBase: roundMoney(cashAmountBase || 0),
-      amountOriginal: Number(row.net_amount) || 0,
+      amountBase: signedAmountBase == null ? null : roundMoney(signedAmountBase),
+      amountOriginal: signedOriginalAmount,
       currency: row.currency,
-      affectsCash: true,
+      affectsCash: Boolean(row.add_to_cash),
       affectsInvestmentReturn: false,
       details: {
         category: row.category,
@@ -305,6 +275,7 @@ async function loadExternalCashEvents(database, userId, baseCurrency) {
         feesTax: row.fees_tax,
         netAmount: row.net_amount,
         propertyAccount: row.property_account,
+        addToCash: Boolean(row.add_to_cash),
         notes: row.notes
       }
     });
@@ -312,26 +283,38 @@ async function loadExternalCashEvents(database, userId, baseCurrency) {
   return events.filter((event) => event.date);
 }
 
-function cashEventFromBuy(lot, amountBase) {
+async function lotCostBase(lot, quantity, baseCurrency, fxCache) {
+  const rate = await rateFor(lot.purchaseCurrency, baseCurrency, fxCache);
+  return (Number(quantity) || 0) * (Number(lot.purchasePrice) || 0) * rate;
+}
+
+function saleRealizedEvent(sale) {
   return {
-    id: `buy_${lot.id}`,
-    date: lot.purchase_date,
-    type: "buy",
-    ticker: lot.ticker,
-    source: lot.ticker,
-    amountBase: -roundMoney(amountBase || 0),
-    affectsCash: true,
-    affectsInvestmentReturn: false,
+    id: sale.id,
+    date: sale.soldAt,
+    type: "share_sale",
+    transactionType: "share_sale",
+    ticker: sale.ticker,
+    source: sale.source === "external" ? "External closed trade" : sale.ticker,
+    amountBase: roundMoney(sale.gainLossBase || 0),
+    amountOriginal: roundMoney(sale.gainLossBase || 0),
+    currency: null,
     details: {
-      quantity: lot.original_quantity,
-      price: lot.purchase_price,
-      currency: lot.purchase_currency,
-      note: lot.notes
+      quantity: roundShares(sale.quantity),
+      salePrice: sale.salePrice,
+      saleCurrency: sale.saleCurrency,
+      costBasisBase: roundMoney(sale.costBasisBase),
+      proceedsBase: roundMoney(sale.proceedsBase),
+      gainLossBase: roundMoney(sale.gainLossBase),
+      gainLossPercent: Number.isFinite(sale.gainLossPercent) ? roundPercent(sale.gainLossPercent) : null,
+      lotId: sale.lotId || sale.syntheticLotId,
+      source: sale.source,
+      notes: sale.notes
     }
   };
 }
 
-function cashEventFromSale(sale) {
+function saleCashEvent(sale) {
   return {
     id: sale.id,
     date: sale.soldAt,
@@ -343,49 +326,51 @@ function cashEventFromSale(sale) {
     affectsCash: true,
     affectsInvestmentReturn: true,
     details: {
-      quantity: sale.quantity,
+      quantity: roundShares(sale.quantity),
       salePrice: sale.salePrice,
       saleCurrency: sale.saleCurrency,
-      costBasisBase: sale.costBasisBase,
-      proceedsBase: sale.proceedsBase,
-      gainLossBase: sale.gainLossBase,
-      gainLossPercent: Number.isFinite(sale.gainLossPercent) ? sale.gainLossPercent : null,
+      proceedsBase: roundMoney(sale.proceedsBase),
+      costBasisBase: roundMoney(sale.costBasisBase),
+      gainLossBase: roundMoney(sale.gainLossBase),
       lotId: sale.lotId || sale.syntheticLotId,
-      notes: sale.notes,
-      source: sale.source
+      notes: sale.notes
     }
   };
 }
 
-function cashEventFromDividend(dividend) {
+function dividendRealizedEvent(dividend) {
   return {
     ...dividend,
-    amountBase: roundMoney(dividend.amountBase || 0),
-    affectsCash: true,
-    affectsInvestmentReturn: true
+    transactionType: "dividend",
+    amountBase: roundMoney(dividend.amountBase || 0)
   };
 }
 
-async function buyCostBase(lot, baseCurrency, fxCache) {
-  const rate = await rateFor(lot.purchase_currency, baseCurrency, fxCache);
-  return (Number(lot.original_quantity) || 0) * (Number(lot.purchase_price) || 0) * rate;
-}
-
-function parseOpeningBalance(database, userId, baseCurrency, firstInvestmentDate) {
-  const saved = getSetting(database, userId, OPENING_BALANCE_KEY) || {};
-  const amountBase = Number(saved.amountBase);
+function externalRealizedEvent(event) {
   return {
-    date: toDateOnly(saved.date || firstInvestmentDate),
-    amount: Number(saved.amount) || (Number.isFinite(amountBase) ? amountBase : 0),
-    currency: saved.currency || baseCurrency,
-    amountBase: Number.isFinite(amountBase) ? amountBase : 0,
-    notes: saved.notes || "",
-    configured: Number.isFinite(amountBase) && Math.abs(amountBase) > 0
+    ...event,
+    transactionType: event.type,
+    amountBase: event.amountBase == null ? null : roundMoney(event.amountBase)
   };
 }
 
-function rangeMaxPoints(range) {
-  return range === "month" ? 80 : PERFORMANCE_RANGES[performanceRange(range)]?.maxPoints || 280;
+function buyCashEvent(lot, amountBase) {
+  return {
+    id: `buy_${lot.id}`,
+    date: lot.purchaseDate,
+    type: "buy",
+    ticker: lot.ticker,
+    source: lot.ticker,
+    amountBase: -roundMoney(amountBase || 0),
+    affectsCash: true,
+    affectsInvestmentReturn: false,
+    details: {
+      quantity: roundShares(lot.originalQuantity),
+      price: lot.purchasePrice,
+      currency: lot.purchaseCurrency,
+      note: lot.notes
+    }
+  };
 }
 
 function pointSummary(points, key) {
@@ -400,104 +385,66 @@ function pointSummary(points, key) {
   };
 }
 
-export async function saveOpeningPortfolioBalance(userId, input = {}) {
-  const database = getDb();
-  const user = database.prepare("SELECT * FROM users WHERE id = ?").get(userId);
-  if (!user) throw new InputError("User not found", 404);
-  const amount = toNumber(input.amount, null);
-  if (amount == null || amount < 0) throw new InputError("Opening balance amount is required");
-  const currency = String(input.currency || user.base_currency).trim().toUpperCase();
-  const amountBase = await convertToBase(amount, currency, user.base_currency);
-  if (amountBase == null) throw new InputError(`FX unavailable for ${currency}/${user.base_currency}`);
-  const date = input.date ? toDateOnly(input.date) : "";
-  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new InputError("Opening balance date must be YYYY-MM-DD");
-  const payload = {
-    amount,
-    currency,
-    amountBase,
-    date,
-    notes: String(input.notes || "").trim(),
-    updatedAt: nowIso()
-  };
-  saveSetting(database, userId, OPENING_BALANCE_KEY, payload);
-  return { openingBalance: payload };
+function thinDates(dates, maxPoints = 280) {
+  const sorted = [...new Set(dates)].filter(Boolean).sort();
+  if (sorted.length <= maxPoints) return sorted;
+  const step = (sorted.length - 1) / (maxPoints - 1);
+  return Array.from({ length: maxPoints }, (_, index) => sorted[Math.round(index * step)])
+    .filter((date, index, rows) => index === 0 || date !== rows[index - 1]);
 }
 
-export async function portfolioWealthTimeline(userId, options = {}) {
-  const database = getDb();
-  const user = database.prepare("SELECT * FROM users WHERE id = ?").get(userId);
-  if (!user) throw new InputError("User not found", 404);
-  const baseCurrency = user.base_currency;
-  const range = normalizeRange(options.range);
-  const dashboard = await calculatePortfolio(userId);
-  const today = isoDate(new Date());
-  const rawLots = loadLots(database, userId);
-  const rawSales = loadSales(database, userId);
-  const existingLotIds = new Set(rawLots.map((lot) => lot.id));
-  const lots = [...rawLots, ...syntheticLotsFromSales(rawSales, existingLotIds)];
-  const sales = rawSales.map((sale) => ({
-    ...sale,
-    syntheticLotId: sale.lotId && existingLotIds.has(sale.lotId) ? sale.lotId : sale.syntheticLotId
-  }));
-  const saleMap = salesByLot(sales);
-  const dividends = loadDividends(database, userId);
-  const externalCashEvents = await loadExternalCashEvents(database, userId, baseCurrency);
+function groupEventsByDate(events) {
+  const map = new Map();
+  for (const event of events) {
+    if (!event.date) continue;
+    if (!map.has(event.date)) map.set(event.date, []);
+    map.get(event.date).push(event);
+  }
+  return map;
+}
+
+function buildRealizedGrowth(events, range, firstTransactionDate, baseCurrency) {
+  const startDate = rangeStart(range, firstTransactionDate);
+  const usableEvents = events
+    .filter((event) => event.date && event.date >= startDate && event.amountBase != null)
+    .sort((a, b) => `${a.date}|${a.type}|${a.id}`.localeCompare(`${b.date}|${b.type}|${b.id}`));
+  const firstDate = range === "all" ? (firstTransactionDate || usableEvents[0]?.date || isoDate(new Date())) : startDate;
+  const points = [{
+    date: firstDate,
+    time: `${firstDate}T00:00:00.000Z`,
+    cumulativeRealizedBase: 0,
+    eventAmountBase: 0,
+    events: [],
+    baseCurrency
+  }];
+  let running = 0;
+  for (const [date, dateEvents] of groupEventsByDate(usableEvents)) {
+    const eventAmountBase = roundMoney(sum(dateEvents.map((event) => event.amountBase)));
+    running = roundMoney(running + eventAmountBase);
+    points.push({
+      date,
+      time: `${date}T00:00:00.000Z`,
+      cumulativeRealizedBase: running,
+      eventAmountBase,
+      events: dateEvents,
+      baseCurrency
+    });
+  }
+  return {
+    points,
+    events: usableEvents,
+    summary: pointSummary(points, "cumulativeRealizedBase")
+  };
+}
+
+async function buildBookValue({ lots, sales, saleMap, dividends, externalEvents, openingBalance, dashboard, range, firstInvestmentDate, baseCurrency }) {
   const fxCache = new Map();
-  const firstInvestmentDate = [
-    ...lots.map((lot) => lot.purchase_date),
-    ...sales.map((sale) => sale.boughtAt)
-  ].filter(Boolean).sort()[0] || today;
-  const startDate = startDateForRange(range, firstInvestmentDate);
-  const openingBalance = parseOpeningBalance(database, userId, baseCurrency, firstInvestmentDate);
-
-  const warnings = [];
-  if (!openingBalance.configured) {
-    warnings.push("Opening Portfolio Balance is not set. Historical cash before the first purchase may be incomplete.");
-  }
-  warnings.push("Fees and taxes are included only where a transaction row stores them.");
-
-  const currentQuotes = currentPriceRows(database);
-  const tickers = [...new Set(lots.map((lot) => lot.ticker))];
-  const histories = new Map();
-  const historyResults = await mapWithConcurrency(tickers, HISTORY_CONCURRENCY, async (ticker) => {
-    const matchingLot = lots.find((lot) => lot.ticker === ticker);
-    try {
-      return {
-        ticker,
-        history: await fetchPriceHistory(ticker, performanceRange(range), {
-          fromDate: startDate,
-          toDate: today,
-          firstHoldingDate: firstInvestmentDate,
-          currency: currentQuotes.get(ticker)?.currency || matchingLot?.equityCurrency || matchingLot?.purchase_currency || "AUD",
-          lots,
-          realizedRows: sales.map((sale) => ({
-            ticker: sale.ticker,
-            soldAt: sale.soldAt,
-            salePrice: sale.salePrice
-          })),
-          currentQuote: currentQuotes.get(ticker)
-        })
-      };
-    } catch (error) {
-      return { ticker, warning: `${ticker}: ${error.message}` };
-    }
-  });
-  for (const result of historyResults) {
-    if (result?.history) {
-      histories.set(result.ticker, result.history);
-      if (result.history.synthetic) warnings.push(`${result.ticker}: estimated from broker transaction prices`);
-    } else if (result?.warning) {
-      warnings.push(result.warning);
-    }
-  }
-
+  const today = isoDate(new Date());
+  const startDate = rangeStart(range, firstInvestmentDate);
   const buyEvents = [];
   for (const lot of lots) {
-    const amountBase = await buyCostBase(lot, baseCurrency, fxCache);
-    buyEvents.push(cashEventFromBuy(lot, amountBase));
+    buyEvents.push(buyCashEvent(lot, await lotCostBase(lot, lot.originalQuantity, baseCurrency, fxCache)));
   }
-  const saleEvents = sales.map(cashEventFromSale);
-  const dividendEvents = dividends.map(cashEventFromDividend);
   const openingEvent = {
     id: "opening_balance",
     date: openingBalance.date || firstInvestmentDate,
@@ -515,27 +462,14 @@ export async function portfolioWealthTimeline(userId, options = {}) {
   const cashEvents = [
     openingEvent,
     ...buyEvents,
-    ...saleEvents,
-    ...dividendEvents,
-    ...externalCashEvents
+    ...sales.map(saleCashEvent),
+    ...dividends.map((event) => ({ ...event, amountBase: roundMoney(event.amountBase || 0), affectsCash: true })),
+    ...externalEvents.filter((event) => event.affectsCash)
   ].filter((event) => event.date && Number.isFinite(Number(event.amountBase)));
 
-  const dateSet = new Set([startDate, today]);
-  if (firstInvestmentDate >= startDate) dateSet.add(firstInvestmentDate);
-  for (const history of histories.values()) {
-    for (const point of history.points || []) {
-      if (point.date >= startDate && point.date <= today) dateSet.add(point.date);
-    }
-  }
-  for (const event of cashEvents) {
-    if (event.date >= startDate && event.date <= today) dateSet.add(event.date);
-  }
-  let anchorDates = thinDates([...dateSet], rangeMaxPoints(range));
-  if (!anchorDates.includes(today)) anchorDates.push(today);
-  anchorDates = [...new Set(anchorDates)].sort();
-
-  const cashReconstructionEvents = cashEvents.filter((event) => eventOnOrBefore(event, today));
-  const reconstructedCashToday = roundMoney(cashReconstructionEvents.reduce((total, event) => total + Number(event.amountBase || 0), 0));
+  const reconstructedCashToday = roundMoney(cashEvents
+    .filter((event) => event.date <= today)
+    .reduce((total, event) => total + Number(event.amountBase || 0), 0));
   const dashboardCashBase = roundMoney(Number(dashboard.summary?.cashAvailableBase) || 0);
   const cashReconciliationBase = roundMoney(dashboardCashBase - reconstructedCashToday);
   let reconciliationEvent = null;
@@ -550,121 +484,443 @@ export async function portfolioWealthTimeline(userId, options = {}) {
       affectsInvestmentReturn: false,
       estimated: true,
       details: {
-        notes: "This reconciles the reconstructed cash ledger to today's actual Dashboard cash balance because deposits/withdrawals are not yet fully persisted."
+        notes: "Reconciles reconstructed cash to the current Dashboard cash balance. It is capital movement, not profit."
       }
     };
     cashEvents.push(reconciliationEvent);
-    warnings.push("Current cash needed a reconciliation adjustment because deposits/withdrawals are not fully stored yet.");
   }
 
+  const dateSet = new Set([startDate, today]);
+  for (const lot of lots) if (lot.purchaseDate >= startDate) dateSet.add(lot.purchaseDate);
+  for (const event of cashEvents) if (event.date >= startDate && event.date <= today) dateSet.add(event.date);
+  const dates = thinDates([...dateSet], 280);
+  const cashByDate = groupEventsByDate(cashEvents);
   const points = [];
-  const eventDetailsByDate = new Map();
-  for (const event of cashEvents) {
-    if (!event.date) continue;
-    if (!eventDetailsByDate.has(event.date)) eventDetailsByDate.set(event.date, []);
-    eventDetailsByDate.get(event.date).push(event);
-  }
-
-  for (const date of anchorDates) {
-    let holdingsValueBase = 0;
-    let partial = false;
-    const missingTickers = [];
+  for (const date of dates) {
+    let remainingCostBasisBase = 0;
     for (const lot of lots) {
       const quantity = quantityHeldAtDate(lot, saleMap, date);
       if (quantity <= 0) continue;
-      const history = histories.get(lot.ticker);
-      const price = priceAtOrBefore(history, date, lot.purchase_price);
-      if (price == null) {
-        partial = true;
-        missingTickers.push(lot.ticker);
-        continue;
-      }
-      const rate = await rateFor(history?.currency || lot.equityCurrency || lot.purchase_currency, baseCurrency, fxCache);
-      holdingsValueBase += price * quantity * rate;
-      if (history?.synthetic) partial = true;
+      remainingCostBasisBase += await lotCostBase(lot, quantity, baseCurrency, fxCache);
     }
-
-    const eventsToDate = cashEvents.filter((event) => eventOnOrBefore(event, date));
-    const cashValueBase = roundMoney(eventsToDate.reduce((total, event) => total + Number(event.amountBase || 0), 0));
+    const eventsToDate = cashEvents.filter((event) => event.date <= date);
+    const cashValueBase = roundMoney(sum(eventsToDate.map((event) => event.amountBase)));
     const netCapitalContributedBase = roundMoney(eventsToDate
-      .filter((event) => !event.affectsInvestmentReturn && ["opening_balance", "deposit", "withdrawal", "external_income", "external_expense"].includes(event.type))
+      .filter((event) => ["opening_balance", "deposit", "withdrawal"].includes(event.type))
       .reduce((total, event) => total + Number(event.amountBase || 0), 0));
-    const realizedGainLossBase = roundMoney(eventsToDate
-      .filter((event) => event.type === "share_sale")
-      .reduce((total, event) => total + Number(event.realizedGainLossBase || 0), 0));
-    const dividendsBase = roundMoney(eventsToDate
-      .filter((event) => event.type === "dividend")
-      .reduce((total, event) => total + Number(event.amountBase || 0), 0));
-    const externalCashBase = roundMoney(eventsToDate
-      .filter((event) => event.type === "external_income" || event.type === "external_expense")
-      .reduce((total, event) => total + Number(event.amountBase || 0), 0));
-    let totalValueBase = roundMoney(holdingsValueBase + cashValueBase);
-    let pointCashBase = cashValueBase;
-    let pointHoldingsBase = roundMoney(holdingsValueBase);
-    let reconciledToDashboard = false;
-    if (date === today) {
-      totalValueBase = roundMoney(Number(dashboard.summary?.totalValueBase) || totalValueBase);
-      pointCashBase = dashboardCashBase;
-      pointHoldingsBase = roundMoney(totalValueBase - pointCashBase);
-      reconciledToDashboard = true;
-    }
     points.push({
       date,
       time: `${date}T00:00:00.000Z`,
-      totalValueBase,
-      value: totalValueBase,
-      holdingsValueBase: pointHoldingsBase,
-      cashValueBase: pointCashBase,
+      remainingCostBasisBase: roundMoney(remainingCostBasisBase),
+      cashValueBase,
+      bookValueBase: roundMoney(remainingCostBasisBase + cashValueBase),
       netCapitalContributedBase,
-      investmentGrowthBase: roundMoney(totalValueBase - netCapitalContributedBase),
-      realizedGainLossBase,
-      dividendsBase,
-      externalCashBase,
-      partial,
-      estimated: partial || date === today && Boolean(reconciliationEvent),
-      reconciledToDashboard,
-      missingTickers: [...new Set(missingTickers)],
-      events: eventDetailsByDate.get(date) || []
+      events: cashByDate.get(date) || [],
+      estimated: Boolean(date === today && reconciliationEvent)
     });
   }
+  const total = pointSummary(points, "bookValueBase");
+  return {
+    points,
+    events: cashEvents.filter((event) => event.date >= startDate && event.date <= today),
+    summary: {
+      ...total,
+      currentOpenCostBasisBase: roundMoney(Number(dashboard.summary?.costBasisBase) || 0),
+      currentCashBase: dashboardCashBase,
+      netCapitalContributedBase: points.at(-1)?.netCapitalContributedBase || 0,
+      cashReconciliationBase,
+      reconstructedCashToday
+    },
+    label: "Book value - does not include historical unrealized market gains."
+  };
+}
 
-  const total = pointSummary(points, "totalValueBase");
-  const growth = pointSummary(points, "investmentGrowthBase");
-  const finalPoint = points[points.length - 1] || null;
-  const reconciliationDiff = finalPoint
-    ? roundMoney(Number(finalPoint.totalValueBase || 0) - Number(dashboard.summary?.totalValueBase || 0))
-    : null;
+function snapshotFromRow(row) {
+  let fxRates = {};
+  try {
+    fxRates = row.fx_rates_json ? JSON.parse(row.fx_rates_json) : {};
+  } catch {
+    fxRates = {};
+  }
+  return {
+    id: row.id,
+    date: row.snapshot_date,
+    time: row.snapshot_time,
+    holdingsValueBase: roundMoney(row.holdings_value_base),
+    cashValueBase: roundMoney(row.cash_value_base),
+    totalValueBase: roundMoney(row.total_value_base),
+    currency: row.currency,
+    fxRates,
+    dataCoveragePercent: row.data_coverage_percent == null ? null : roundPercent(row.data_coverage_percent),
+    provider: row.provider,
+    source: row.source,
+    sourceType: row.source_type,
+    manual: row.source_type === SNAPSHOT_SOURCE_MANUAL,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
 
+function loadSnapshots(database, userId, startDate) {
+  return database.prepare(`
+    SELECT *
+    FROM portfolio_snapshots
+    WHERE user_id = ?
+      AND snapshot_date >= ?
+    ORDER BY snapshot_date, snapshot_time, source_type
+  `).all(userId, startDate).map(snapshotFromRow);
+}
+
+function snapshotSummary(points) {
+  return {
+    ...pointSummary(points, "totalValueBase"),
+    snapshotCount: points.length,
+    manualSnapshotCount: points.filter((point) => point.manual).length,
+    automaticSnapshotCount: points.filter((point) => !point.manual).length
+  };
+}
+
+function buildActualPortfolioValue(database, userId, range, firstInvestmentDate) {
+  const startDate = rangeStart(range, firstInvestmentDate);
+  const snapshots = loadSnapshots(database, userId, startDate);
+  const points = snapshots.map((snapshot) => ({
+    ...snapshot,
+    time: snapshot.time,
+    chartKind: "snapshot",
+    sourceLabel: snapshot.manual ? "Manual broker snapshot" : "Automatic app snapshot"
+  }));
+  return {
+    points,
+    snapshots,
+    summary: snapshotSummary(points),
+    dataQuality: {
+      interpolation: "none; only saved market-value snapshots are plotted",
+      noFakeHistoricalPrices: true,
+      hasSnapshots: points.length > 0
+    }
+  };
+}
+
+function currentUser(database, userId) {
+  const user = database.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+  if (!user) throw new InputError("User not found", 404);
+  return user;
+}
+
+function firstTransactionDate(lots, sales, dividends, externalEvents) {
+  return [
+    ...lots.map((lot) => lot.purchaseDate),
+    ...sales.map((sale) => sale.boughtAt || sale.soldAt),
+    ...dividends.map((dividend) => dividend.date),
+    ...externalEvents.map((event) => event.date)
+  ].filter(Boolean).sort()[0] || isoDate(new Date());
+}
+
+function realizedSummary(realizedEvents) {
+  const shareSales = realizedEvents.filter((event) => event.type === "share_sale");
+  const dividends = realizedEvents.filter((event) => event.type === "dividend");
+  const externalIncome = realizedEvents.filter((event) => event.type === "external_income");
+  const externalExpenses = realizedEvents.filter((event) => event.type === "external_expense");
+  const netRealizedPnlBase = roundMoney(sum(shareSales.map((event) => event.amountBase)));
+  const dividendsBase = roundMoney(sum(dividends.map((event) => event.amountBase)));
+  const externalIncomeBase = roundMoney(sum(externalIncome.map((event) => event.amountBase)));
+  const externalExpensesBase = roundMoney(sum(externalExpenses.map((event) => event.amountBase)));
+  return {
+    netRealizedPnlBase,
+    dividendsBase,
+    externalIncomeBase,
+    externalExpensesBase,
+    realizedGrowthTotalBase: roundMoney(netRealizedPnlBase + dividendsBase + externalIncomeBase + externalExpensesBase)
+  };
+}
+
+export async function saveOpeningPortfolioBalance(userId, input = {}) {
+  const database = getDb();
+  const user = currentUser(database, userId);
+  const amount = toNumber(input.amount, null);
+  if (amount == null || amount < 0) throw new InputError("Opening balance amount is required");
+  const currency = String(input.currency || user.base_currency).trim().toUpperCase();
+  const amountBase = await convertToBase(amount, currency, user.base_currency);
+  if (amountBase == null) throw new InputError(`FX unavailable for ${currency}/${user.base_currency}`);
+  const date = input.date ? assertDate(input.date, "Opening balance date") : "";
+  const payload = {
+    amount,
+    currency,
+    amountBase,
+    date,
+    notes: String(input.notes || "").trim(),
+    updatedAt: nowIso()
+  };
+  saveSetting(database, userId, OPENING_BALANCE_KEY, payload);
+  return { openingBalance: payload };
+}
+
+export function saveAutomaticPortfolioSnapshot(userId, dashboard) {
+  const database = getDb();
+  const user = currentUser(database, userId);
+  const payload = dashboard || null;
+  if (!payload?.summary) return null;
+  const date = isoDate(new Date());
+  const time = nowIso();
+  const openPositions = (payload.positions || []).filter((position) => !position.closed && Number(position.quantity) > 0);
+  const coveredPositions = openPositions.filter((position) => Number(position.price?.price) > 0);
+  const coverage = openPositions.length ? roundPercent((coveredPositions.length / openPositions.length) * 100) : 100;
+  const providers = [...new Set(openPositions.map((position) => position.price?.provider).filter(Boolean))];
+  const holdingsValueBase = roundMoney((Number(payload.summary.totalValueBase) || 0) - (Number(payload.summary.cashAvailableBase) || 0));
+  const cashValueBase = roundMoney(Number(payload.summary.cashAvailableBase) || 0);
+  const totalValueBase = roundMoney(Number(payload.summary.totalValueBase) || holdingsValueBase + cashValueBase);
+  const existing = database.prepare(`
+    SELECT *
+    FROM portfolio_snapshots
+    WHERE user_id = ? AND snapshot_date = ? AND source_type = ?
+  `).get(userId, date, SNAPSHOT_SOURCE_AUTO);
+  if (existing && Number(existing.data_coverage_percent || 0) > coverage) return snapshotFromRow(existing);
+  const snapshotId = existing?.id || id("snap");
+  database.prepare(`
+    INSERT INTO portfolio_snapshots (
+      id, user_id, snapshot_date, snapshot_time, holdings_value_base, cash_value_base,
+      total_value_base, currency, fx_rates_json, data_coverage_percent, provider,
+      source, source_type, notes, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, snapshot_date, source_type) DO UPDATE SET
+      snapshot_time = excluded.snapshot_time,
+      holdings_value_base = excluded.holdings_value_base,
+      cash_value_base = excluded.cash_value_base,
+      total_value_base = excluded.total_value_base,
+      currency = excluded.currency,
+      fx_rates_json = excluded.fx_rates_json,
+      data_coverage_percent = excluded.data_coverage_percent,
+      provider = excluded.provider,
+      source = excluded.source,
+      notes = excluded.notes,
+      updated_at = excluded.updated_at
+  `).run(
+    snapshotId,
+    userId,
+    date,
+    time,
+    holdingsValueBase,
+    cashValueBase,
+    totalValueBase,
+    user.base_currency,
+    JSON.stringify({ baseCurrency: user.base_currency }),
+    coverage,
+    providers.join(" + ") || "dashboard",
+    "Automatic app snapshot",
+    SNAPSHOT_SOURCE_AUTO,
+    `${coveredPositions.length}/${openPositions.length} open positions had saved prices`,
+    existing?.created_at || time,
+    time
+  );
+  return snapshotFromRow(database.prepare("SELECT * FROM portfolio_snapshots WHERE id = ?").get(snapshotId));
+}
+
+async function manualSnapshotPayload(user, input = {}) {
+  const date = assertDate(input.date || input.snapshotDate, "Snapshot date");
+  const currency = String(input.currency || user.base_currency).trim().toUpperCase();
+  const holdingsValue = toNumber(input.holdingsValue ?? input.holdings_value ?? input.holdingsValueBase, null);
+  const cashValue = toNumber(input.cashValue ?? input.cash_value ?? input.cashValueBase, null);
+  if (holdingsValue == null || holdingsValue < 0) throw new InputError("Holdings value is required");
+  if (cashValue == null || cashValue < 0) throw new InputError("Cash value is required");
+  const holdingsValueBase = await convertToBase(holdingsValue, currency, user.base_currency);
+  const cashValueBase = await convertToBase(cashValue, currency, user.base_currency);
+  if (holdingsValueBase == null || cashValueBase == null) throw new InputError(`FX unavailable for ${currency}/${user.base_currency}`);
+  return {
+    date,
+    time: `${date}T12:00:00.000Z`,
+    holdingsValueBase,
+    cashValueBase,
+    totalValueBase: roundMoney(holdingsValueBase + cashValueBase),
+    currency,
+    provider: "manual",
+    source: String(input.source || input.brokerSource || "Manual broker snapshot").trim() || "Manual broker snapshot",
+    notes: String(input.notes || "").trim(),
+    coverage: 100
+  };
+}
+
+export async function createManualPortfolioSnapshot(userId, input = {}) {
+  const database = getDb();
+  const user = currentUser(database, userId);
+  const payload = await manualSnapshotPayload(user, input);
+  const snapshotId = id("snap");
+  const now = nowIso();
+  database.prepare(`
+    INSERT INTO portfolio_snapshots (
+      id, user_id, snapshot_date, snapshot_time, holdings_value_base, cash_value_base,
+      total_value_base, currency, fx_rates_json, data_coverage_percent, provider,
+      source, source_type, notes, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, snapshot_date, source_type) DO UPDATE SET
+      snapshot_time = excluded.snapshot_time,
+      holdings_value_base = excluded.holdings_value_base,
+      cash_value_base = excluded.cash_value_base,
+      total_value_base = excluded.total_value_base,
+      currency = excluded.currency,
+      fx_rates_json = excluded.fx_rates_json,
+      data_coverage_percent = excluded.data_coverage_percent,
+      provider = excluded.provider,
+      source = excluded.source,
+      notes = excluded.notes,
+      updated_at = excluded.updated_at
+  `).run(
+    snapshotId,
+    userId,
+    payload.date,
+    payload.time,
+    payload.holdingsValueBase,
+    payload.cashValueBase,
+    payload.totalValueBase,
+    payload.currency,
+    JSON.stringify({ enteredCurrency: payload.currency, baseCurrency: user.base_currency }),
+    payload.coverage,
+    payload.provider,
+    payload.source,
+    SNAPSHOT_SOURCE_MANUAL,
+    payload.notes,
+    now,
+    now
+  );
+  return { snapshot: snapshotFromRow(database.prepare(`
+    SELECT *
+    FROM portfolio_snapshots
+    WHERE user_id = ? AND snapshot_date = ? AND source_type = ?
+  `).get(userId, payload.date, SNAPSHOT_SOURCE_MANUAL)) };
+}
+
+export async function updateManualPortfolioSnapshot(userId, snapshotId, input = {}) {
+  const database = getDb();
+  const user = currentUser(database, userId);
+  const existing = database.prepare(`
+    SELECT *
+    FROM portfolio_snapshots
+    WHERE id = ? AND user_id = ? AND source_type = ?
+  `).get(snapshotId, userId, SNAPSHOT_SOURCE_MANUAL);
+  if (!existing) throw new InputError("Manual portfolio snapshot not found", 404);
+  const payload = await manualSnapshotPayload(user, input);
+  database.prepare(`
+    UPDATE portfolio_snapshots
+    SET snapshot_date = ?, snapshot_time = ?, holdings_value_base = ?, cash_value_base = ?,
+      total_value_base = ?, currency = ?, fx_rates_json = ?, data_coverage_percent = ?,
+      provider = ?, source = ?, notes = ?, updated_at = ?
+    WHERE id = ? AND user_id = ? AND source_type = ?
+  `).run(
+    payload.date,
+    payload.time,
+    payload.holdingsValueBase,
+    payload.cashValueBase,
+    payload.totalValueBase,
+    payload.currency,
+    JSON.stringify({ enteredCurrency: payload.currency, baseCurrency: user.base_currency }),
+    payload.coverage,
+    payload.provider,
+    payload.source,
+    payload.notes,
+    nowIso(),
+    snapshotId,
+    userId,
+    SNAPSHOT_SOURCE_MANUAL
+  );
+  return { snapshot: snapshotFromRow(database.prepare("SELECT * FROM portfolio_snapshots WHERE id = ?").get(snapshotId)) };
+}
+
+export function deletePortfolioSnapshot(userId, snapshotId) {
+  const database = getDb();
+  const result = database.prepare(`
+    DELETE FROM portfolio_snapshots
+    WHERE id = ? AND user_id = ? AND source_type = ?
+  `).run(snapshotId, userId, SNAPSHOT_SOURCE_MANUAL);
+  if (!result.changes) throw new InputError("Manual portfolio snapshot not found", 404);
+  return { ok: true };
+}
+
+export async function portfolioWealthTimeline(userId, options = {}) {
+  const database = getDb();
+  const user = currentUser(database, userId);
+  const baseCurrency = user.base_currency;
+  const range = normalizeRange(options.range);
+  const dashboard = await calculatePortfolio(userId);
+  const rawLots = loadLots(database, userId);
+  const rawSales = loadSales(database, userId);
+  const existingLotIds = new Set(rawLots.map((lot) => lot.id));
+  const lots = [...rawLots, ...syntheticLotsFromSales(rawSales, existingLotIds)];
+  const sales = rawSales.map((sale) => ({
+    ...sale,
+    syntheticLotId: sale.lotId && existingLotIds.has(sale.lotId) ? sale.lotId : sale.syntheticLotId
+  }));
+  const saleMap = salesByLot(sales);
+  const dividends = loadDividends(database, userId);
+  const externalEvents = await loadExternalEvents(database, userId, baseCurrency);
+  const firstInvestmentDate = firstTransactionDate(lots, sales, dividends, externalEvents);
+  const startDate = rangeStart(range, firstInvestmentDate);
+  const openingBalance = parseOpeningBalance(database, userId, baseCurrency, firstInvestmentDate);
+  const realizedEvents = [
+    ...sales.map(saleRealizedEvent),
+    ...dividends.map(dividendRealizedEvent),
+    ...externalEvents.map(externalRealizedEvent)
+  ].filter((event) => event.date && event.amountBase != null)
+    .sort((a, b) => `${a.date}|${a.type}|${a.id}`.localeCompare(`${b.date}|${b.type}|${b.id}`));
+  const realized = buildRealizedGrowth(realizedEvents, range, firstInvestmentDate, baseCurrency);
+  const bookValue = await buildBookValue({
+    lots,
+    sales,
+    saleMap,
+    dividends,
+    externalEvents,
+    openingBalance,
+    dashboard,
+    range,
+    firstInvestmentDate,
+    baseCurrency
+  });
+  const actualPortfolioValue = buildActualPortfolioValue(database, userId, range, firstInvestmentDate);
+  const realizedTotals = realizedSummary(realizedEvents);
+  const currentOpenCostBasisBase = roundMoney(Number(dashboard.summary?.costBasisBase) || 0);
+  const currentCashBase = roundMoney(Number(dashboard.summary?.cashAvailableBase) || 0);
+  const currentPortfolioMarketValueBase = roundMoney(Number(dashboard.summary?.totalValueBase) || 0);
+  const summary = {
+    netCapitalContributedBase: bookValue.summary.netCapitalContributedBase,
+    currentOpenCostBasisBase,
+    netRealizedPnlBase: realizedTotals.netRealizedPnlBase,
+    dividendsBase: realizedTotals.dividendsBase,
+    externalIncomeBase: realizedTotals.externalIncomeBase,
+    externalExpensesBase: realizedTotals.externalExpensesBase,
+    realizedGrowthTotalBase: realizedTotals.realizedGrowthTotalBase,
+    currentCashBase,
+    currentPortfolioMarketValueBase,
+    currentBookValueBase: roundMoney(currentOpenCostBasisBase + currentCashBase),
+    snapshotCount: actualPortfolioValue.summary.snapshotCount,
+    manualSnapshotCount: actualPortfolioValue.summary.manualSnapshotCount,
+    automaticSnapshotCount: actualPortfolioValue.summary.automaticSnapshotCount
+  };
+  const recommendedMode = actualPortfolioValue.points.length ? "portfolio_value" : "realized_growth";
+  const warnings = [];
+  if (!openingBalance.configured) warnings.push("Opening Portfolio Balance is not set. Historical cash before the first purchase may be incomplete.");
+  if (!actualPortfolioValue.points.length) warnings.push("Historical market prices are incomplete. Showing transaction-based results.");
+  if (Math.abs(bookValue.summary.cashReconciliationBase || 0) >= 0.01) warnings.push("Current cash includes an estimated reconciliation adjustment because deposits/withdrawals are not fully stored yet.");
   return {
     range,
     baseCurrency,
     startDate,
     firstInvestmentDate,
     openingBalance,
-    points,
-    events: cashEvents
-      .filter((event) => event.date >= startDate && event.date <= today)
-      .sort((a, b) => eventKey(a).localeCompare(eventKey(b))),
-    summary: {
-      ...total,
-      startGrowthValue: growth.startValue,
-      endGrowthValue: growth.endValue,
-      investmentGrowthChangeValue: growth.changeValue,
-      investmentGrowthChangePercent: growth.changePercent,
-      currentDashboardTotalBase: roundMoney(Number(dashboard.summary?.totalValueBase) || 0),
-      currentDashboardCashBase: dashboardCashBase,
-      currentDashboardHoldingsBase: roundMoney((Number(dashboard.summary?.totalValueBase) || 0) - dashboardCashBase),
-      finalReconciliationDiff: reconciliationDiff,
-      cashReconciliationBase,
-      reconstructedCashToday,
-      eventCount: cashEvents.length,
-      partialPointCount: points.filter((point) => point.partial).length
-    },
+    recommendedMode,
+    realizedGrowth: realized,
+    bookValue,
+    actualPortfolioValue,
+    snapshots: actualPortfolioValue.snapshots,
+    summary,
     dataQuality: {
-      usesHistoricalCloses: true,
-      interpolation: "none; latest known close at or before each anchor date is used",
-      finalPointReconciles: reconciliationDiff != null && Math.abs(reconciliationDiff) < 0.02,
+      usesHistoricalCloses: false,
+      noFakeHistoricalPrices: true,
+      interpolation: "none; realized and book-value views use confirmed transactions only, and market value uses saved snapshots only",
       warnings: [...new Set(warnings)].slice(0, 30)
-    }
+    },
+    // Backward-compatible fields for older UI paths.
+    points: actualPortfolioValue.points,
+    events: realized.events
   };
 }

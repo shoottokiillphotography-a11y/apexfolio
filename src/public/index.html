@@ -706,6 +706,7 @@
           </div>
 
           <div id="realizedIncomeSummary" class="summary-grid compact-summary realized-income-summary"></div>
+          <p class="portfolio-mode-notice" id="realizedIncomeNotice"></p>
 
           <form class="closed-transaction-form opening-balance-form" id="openingBalanceForm">
             <div class="form-copy">
@@ -733,6 +734,36 @@
             <button class="button secondary" type="submit">Save Opening Balance</button>
             <span class="muted" id="openingBalanceStatus"></span>
           </form>
+
+          <form class="closed-transaction-form snapshot-form" id="manualSnapshotForm">
+            <div class="form-copy">
+              <strong>Add Historical Portfolio Snapshot</strong>
+              <span class="muted">Use statement values only. These show as manual broker snapshots.</span>
+            </div>
+            <input name="date" type="date" required aria-label="Snapshot date">
+            <input name="holdingsValue" type="number" step="0.01" min="0" placeholder="Holdings value" required>
+            <input name="cashValue" type="number" step="0.01" min="0" placeholder="Cash value" required>
+            <select name="currency" aria-label="Snapshot currency">
+              <option value="AUD">AUD</option>
+              <option value="USD">USD</option>
+              <option value="GBP">GBP</option>
+              <option value="EUR">EUR</option>
+              <option value="DKK">DKK</option>
+              <option value="HKD">HKD</option>
+              <option value="CHF">CHF</option>
+              <option value="CAD">CAD</option>
+              <option value="JPY">JPY</option>
+              <option value="SEK">SEK</option>
+              <option value="NOK">NOK</option>
+              <option value="NZD">NZD</option>
+              <option value="SGD">SGD</option>
+            </select>
+            <input name="source" placeholder="Source / broker statement">
+            <input class="wide" name="notes" placeholder="Optional notes">
+            <button class="button secondary" id="manualSnapshotSubmit" type="submit">Save Snapshot</button>
+            <button class="button secondary" data-action="cancelSnapshotEdit" id="manualSnapshotCancel" type="button" hidden>Cancel Edit</button>
+          </form>
+          <div id="portfolioSnapshotsTable" class="compact-table snapshot-table"></div>
 
           <div class="realized-income-view" data-income-view-panel="timeline">
             <div class="performance-chart-shell realized-income-chart-shell">

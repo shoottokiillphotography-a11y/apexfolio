@@ -383,6 +383,31 @@ function migrate(database) {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (user_id, key)
     );
+
+    CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      snapshot_date TEXT NOT NULL,
+      snapshot_time TEXT NOT NULL,
+      holdings_value_base REAL NOT NULL,
+      cash_value_base REAL NOT NULL,
+      total_value_base REAL NOT NULL,
+      currency TEXT NOT NULL,
+      fx_rates_json TEXT,
+      data_coverage_percent REAL,
+      provider TEXT,
+      source TEXT,
+      source_type TEXT NOT NULL CHECK (source_type IN ('auto','manual')),
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_portfolio_snapshots_day_source
+      ON portfolio_snapshots(user_id, snapshot_date, source_type);
+
+    CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_user_date
+      ON portfolio_snapshots(user_id, snapshot_date);
   `);
 
   ensureColumn(database, "users", "display_name", "TEXT");

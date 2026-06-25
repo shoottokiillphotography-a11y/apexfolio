@@ -4155,6 +4155,37 @@ dialog::backdrop {
   white-space: nowrap;
 }
 
+.portfolio-mode-notice {
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 14px;
+  color: var(--secondary);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.snapshot-form {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--elevated) 78%, transparent);
+}
+
+.snapshot-form .form-copy strong,
+.snapshot-form .form-copy span {
+  display: block;
+}
+
+.snapshot-table {
+  margin-bottom: 16px;
+}
+
+.snapshot-row {
+  grid-template-columns: minmax(170px, 1.2fr) repeat(3, minmax(130px, 0.75fr)) minmax(110px, 0.5fr) auto;
+}
+
 .wealth-area {
   fill: color-mix(in srgb, var(--success) 20%, transparent);
   opacity: 0.7;
@@ -4167,6 +4198,21 @@ dialog::backdrop {
   stroke-linejoin: round;
   stroke-width: 3;
   filter: drop-shadow(0 0 10px rgba(0, 194, 122, 0.16));
+}
+
+.wealth-line.secondary {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 7 7;
+  filter: none;
+}
+
+.book-value-area {
+  fill: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.realized-growth-area {
+  fill: color-mix(in srgb, var(--success) 16%, transparent);
 }
 
 .wealth-anchor {
@@ -4267,6 +4313,24 @@ dialog::backdrop {
   border-radius: 999px;
   background: var(--success);
   border: 0;
+}
+
+.snapshot-marker {
+  cursor: crosshair;
+  stroke: var(--bg);
+  stroke-width: 2;
+}
+
+.snapshot-marker.auto,
+.income-dot.snapshot {
+  fill: var(--success);
+  background: var(--success);
+}
+
+.snapshot-marker.manual,
+.income-dot.manual {
+  fill: var(--accent);
+  background: var(--accent);
 }
 
 .income-dot {
