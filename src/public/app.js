@@ -1961,7 +1961,8 @@ function renderRulesV2Summary() {
   const node = $("#rulesV2Summary");
   if (!node) return;
   const payload = state.rulesV2;
-  const summary = payload?.summary || {};
+  const rows = payload?.evaluations || [];
+  const buckets = rulesCenterBuckets(rows);
   const baseCurrency = state.dashboard?.user?.baseCurrency || "AUD";
   if (state.rulesV2Loading) {
     node.innerHTML = `<div class="summary-card"><span>Loading</span><strong>Checking rules...</strong><small>Read-only comparison</small></div>`;
@@ -1972,19 +1973,19 @@ function renderRulesV2Summary() {
       <div class="summary-card">
         <span>Rules V2</span>
         <strong>Not loaded</strong>
-        <small>${escapeHtml(state.rulesV2Error || "Open or refresh the comparison.")}</small>
+        <small>${escapeHtml(state.rulesV2Error || "Open or refresh the Rules Center.")}</small>
       </div>
     `;
     return;
   }
   node.innerHTML = [
-    ["Monitored", summary.total || 0, `${summary.portfolio || 0} portfolio / ${summary.watchlist || 0} watchlist`],
-    ["Changed vs old", summary.changedCount || 0, "Where V2 disagrees with current engine"],
-    ["Blocked", summary.blockedCount || 0, "Hard rules block adding"],
-    ["Caution", summary.cautionCount || 0, "Needs review before action"],
-    ["Portfolio value", money(state.dashboard?.summary?.totalValueBase || 0, baseCurrency), "Current dashboard total"]
-  ].map(([label, value, detail]) => `
-    <div class="summary-card">
+    ["Urgent", buckets.urgent.length, "Critical or high-priority rules", "negative"],
+    ["Needs Review", buckets.review.length, "Thesis, valuation, sizing, or group checks", "warning"],
+    ["Buy/Add Eligible", buckets.eligible.length, "Attractive and not blocked", "live"],
+    ["Blocked Ideas", buckets.blocked.length, "Attractive signal blocked by portfolio rules", "ai"],
+    ["Portfolio value", money(state.dashboard?.summary?.totalValueBase || 0, baseCurrency), "Current dashboard total", "neutral"]
+  ].map(([label, value, detail, tone]) => `
+    <div class="summary-card rules-summary-card ${escapeHtml(tone)}">
       <span>${escapeHtml(label)}</span>
       <strong>${escapeHtml(String(value))}</strong>
       <small>${escapeHtml(detail)}</small>
@@ -1992,25 +1993,245 @@ function renderRulesV2Summary() {
   `).join("");
 }
 
-function renderRulesV2() {
-  const statusNode = $("#rulesV2Status");
-  const tableNode = $("#rulesV2Table");
-  if (!statusNode || !tableNode) return;
-  renderRulesV2Summary();
+function rulesCenterBuckets(rows = []) {
+  const buckets = {
+    urgent: [],
+    blocked: [],
+    trim: [],
+    review: [],
+    eligible: [],
+    data: [],
+    monitor: []
+  };
+  const seenPrimary = new Set();
+  const keyFor = (item) => `${item.scope || ""}:${item.ticker || ""}:${item.watchlistItemId || ""}:${item.primaryReasonCode || ""}`;
+  const add = (bucket, item) => {
+    const key = keyFor(item);
+    if (seenPrimary.has(key)) return;
+    seenPrimary.add(key);
+    bucket.push(item);
+  };
+
+  for (const item of rows) {
+    const hasDataIssue = item.dataState && item.dataState !== "OK";
+    const isBlockedOpportunity = ["BUY", "ADD"].includes(item.underlyingSignal) && item.tradeEligibility === "BLOCKED";
+    const isUrgent = ["Critical", "High"].includes(item.priority);
+    if (hasDataIssue) buckets.data.push(item);
+    if (isBlockedOpportunity) {
+      add(buckets.blocked, item);
+    } else if (item.finalAction === "TRIM") {
+      add(buckets.trim, item);
+    } else if (isUrgent) {
+      add(buckets.urgent, item);
+    } else if (item.finalAction === "REVIEW" || item.tradeEligibility === "CAUTION") {
+      add(buckets.review, item);
+    } else if (["BUY", "ADD"].includes(item.finalAction) && item.tradeEligibility !== "BLOCKED") {
+      add(buckets.eligible, item);
+    } else {
+      add(buckets.monitor, item);
+    }
+  }
+  return buckets;
+}
+
+function rulesCenterPrimaryAction(buckets) {
+  if (buckets.trim.length) return {
+    tone: "negative",
+    title: "Review trim signals first",
+    text: `${buckets.trim.length} position${buckets.trim.length === 1 ? "" : "s"} triggered trim or concentration rules. Check sizing before considering new buys.`,
+    cta: "Open Portfolio",
+    view: "portfolio",
+    scrollTarget: "holdingsBand"
+  };
+  if (buckets.blocked.length) return {
+    tone: "warning",
+    title: "Blocked opportunities need judgment",
+    text: `${buckets.blocked.length} attractive signal${buckets.blocked.length === 1 ? " is" : "s are"} blocked by portfolio construction rules.`,
+    cta: "Review Blocked",
+    view: "rules-v2"
+  };
+  if (buckets.data.length) return {
+    tone: "warning",
+    title: "Fix data confidence before acting",
+    text: `${buckets.data.length} ticker${buckets.data.length === 1 ? "" : "s"} have stale, partial, or missing data.`,
+    cta: "Refresh Prices",
+    action: "refreshPrices"
+  };
+  if (buckets.eligible.length) return {
+    tone: "live",
+    title: "Eligible buy/add candidates found",
+    text: `${buckets.eligible.length} idea${buckets.eligible.length === 1 ? "" : "s"} passed V2 eligibility checks. Review thesis before acting.`,
+    cta: "Open Research",
+    view: "research",
+    scrollTarget: "watchlistsBand"
+  };
+  return {
+    tone: "neutral",
+    title: "Hold course",
+    text: "No urgent V2 rule needs action from the current data. Keep monitoring alerts and data quality.",
+    cta: "Open Dashboard",
+    view: "dashboard"
+  };
+}
+
+function ruleActionButton(config) {
+  if (config.action) {
+    return `<button class="button primary" data-action="${escapeHtml(config.action)}" type="button">${escapeHtml(config.cta)}</button>`;
+  }
+  return `<button class="button primary" data-view-jump="${escapeHtml(config.view || "dashboard")}" ${config.scrollTarget ? `data-scroll-target="${escapeHtml(config.scrollTarget)}"` : ""} type="button">${escapeHtml(config.cta)}</button>`;
+}
+
+function renderRulesV2Command() {
+  const node = $("#rulesV2Command");
+  if (!node) return;
   if (state.rulesV2Loading) {
-    statusNode.textContent = "Building the read-only comparison...";
-    tableNode.innerHTML = `<p class="muted">Checking portfolio, watchlists, valuation zones, sizing, group exposure, data quality, and liquidity.</p>`;
+    node.innerHTML = `<p class="muted">Loading today’s rules command...</p>`;
     return;
   }
   if (!state.rulesV2) {
-    statusNode.textContent = state.rulesV2Error || "Read-only comparison. Existing dashboard rules remain active.";
-    tableNode.innerHTML = `<p class="muted">Open this page or press Refresh Comparison to load Rules V2.</p>`;
+    node.innerHTML = `<p class="muted">Rules Center has not loaded yet.</p>`;
     return;
   }
+  const buckets = rulesCenterBuckets(state.rulesV2.evaluations || []);
+  const command = rulesCenterPrimaryAction(buckets);
+  node.innerHTML = `
+    <div class="rules-command-card ${escapeHtml(command.tone)}">
+      <span class="status-pill ${escapeHtml(command.tone === "negative" ? "negative" : command.tone === "warning" ? "warning" : command.tone === "live" ? "live" : "neutral")}">${escapeHtml(command.tone === "negative" ? "High priority" : command.tone === "warning" ? "Review" : command.tone === "live" ? "Opportunity" : "Stable")}</span>
+      <h3>${escapeHtml(command.title)}</h3>
+      <p>${escapeHtml(command.text)}</p>
+      <div class="button-row">
+        ${ruleActionButton(command)}
+        <button class="button secondary" data-view-jump="alerts" data-scroll-target="alertsBand" type="button">Open Alerts</button>
+      </div>
+    </div>
+  `;
+}
 
-  const payload = state.rulesV2;
-  statusNode.textContent = `${payload.version} | ${payload.notice}`;
-  const rows = payload.evaluations || [];
+function renderRulesV2Radar() {
+  const node = $("#rulesV2Radar");
+  if (!node) return;
+  const rows = state.rulesV2?.evaluations || [];
+  if (!rows.length) {
+    node.innerHTML = `<p class="muted">No radar data yet.</p>`;
+    return;
+  }
+  const buckets = rulesCenterBuckets(rows);
+  const metrics = [
+    ["Trim pressure", buckets.trim.length, "negative"],
+    ["Blocked adds", buckets.blocked.length, "warning"],
+    ["Data issues", buckets.data.length, "warning"],
+    ["Eligible", buckets.eligible.length, "live"],
+    ["Monitor", buckets.monitor.length, "neutral"]
+  ];
+  node.innerHTML = `
+    <div class="rules-radar-bars">
+      ${metrics.map(([label, value, tone]) => {
+        const width = Math.max(5, Math.min(100, rows.length ? (Number(value) / rows.length) * 100 : 0));
+        return `
+          <div class="rules-radar-row">
+            <span>${escapeHtml(label)}</span>
+            <div class="rules-radar-track"><span class="${escapeHtml(tone)}" style="width:${width}%"></span></div>
+            <strong>${escapeHtml(String(value))}</strong>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function rulesCenterDestination(item) {
+  if (item.scope === "WATCHLIST") {
+    return `<button class="button secondary" data-view-jump="research" data-scroll-target="watchlistsBand" type="button">Watchlist</button>`;
+  }
+  return `<button class="button secondary" data-view-jump="portfolio" data-scroll-target="holdingsBand" type="button">Portfolio</button>`;
+}
+
+function rulesCenterCard(item, tone = "neutral") {
+  const price = item.context?.price == null
+    ? "Price n/a"
+    : money(item.context.price, item.context.currency || state.dashboard?.user?.baseCurrency || "USD");
+  const scores = item.scores || {};
+  const scoreLine = [
+    `Thesis ${scores.thesisConviction ?? "n/a"}`,
+    `Value ${scores.valuationOpportunity ?? "n/a"}`,
+    `Fit ${scores.portfolioFit ?? "n/a"}`,
+    `Data ${scores.dataConfidence ?? "n/a"}`
+  ].join(" / ");
+  const alertScope = item.scope === "WATCHLIST" ? "WATCHLIST" : "EQUITY";
+  return `
+    <article class="rules-action-card ${escapeHtml(tone)}">
+      <div class="rules-action-head">
+        <div>
+          ${tickerButton(item.ticker)}
+          <span class="muted">${escapeHtml(item.name || item.context?.theme || item.scope || "")}</span>
+        </div>
+        ${ruleV2Pill(item.finalAction, item.classes?.finalAction)}
+      </div>
+      <div class="rules-action-meta">
+        ${ruleV2Pill(item.priority, item.classes?.priority)}
+        ${ruleV2Pill(item.tradeEligibility, item.classes?.eligibility)}
+        ${ruleV2Pill(item.underlyingSignal, item.classes?.valuation)}
+      </div>
+      <h3>${escapeHtml(item.primaryReasonCode || "RULE_TRIGGERED")}</h3>
+      <p>${escapeHtml(item.explanation || "Review this rule output.")}</p>
+      <div class="rules-action-context">
+        <span>${escapeHtml(price)}</span>
+        <span>${escapeHtml(item.context?.groupName || item.context?.theme || "Unclassified")}</span>
+        <span>${escapeHtml(scoreLine)}</span>
+      </div>
+      <div class="rules-action-links">
+        <button class="button secondary" data-open-stock="${escapeHtml(item.ticker)}" type="button">Stock Page</button>
+        ${rulesCenterDestination(item)}
+        <button class="button" data-open-alert="${escapeHtml(item.ticker)}" data-scope="${escapeHtml(alertScope)}" data-watchlist-item-id="${escapeHtml(item.watchlistItemId || "")}" type="button">Create Alert</button>
+      </div>
+    </article>
+  `;
+}
+
+function rulesCenterSection(title, subtitle, items, tone, emptyText, limit = 8) {
+  return `
+    <section class="rules-queue-section ${escapeHtml(tone)}">
+      <div class="rules-queue-head">
+        <div>
+          <span class="eyebrow">${escapeHtml(title)}</span>
+          <h3>${escapeHtml(subtitle)}</h3>
+        </div>
+        <strong>${items.length}</strong>
+      </div>
+      <div class="rules-card-grid">
+        ${items.length ? items.slice(0, limit).map((item) => rulesCenterCard(item, tone)).join("") : `<p class="muted">${escapeHtml(emptyText)}</p>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderRulesV2Queues() {
+  const node = $("#rulesV2Queues");
+  if (!node) return;
+  if (state.rulesV2Loading) {
+    node.innerHTML = `<p class="muted">Building V2 action queues...</p>`;
+    return;
+  }
+  const rows = state.rulesV2?.evaluations || [];
+  if (!rows.length) {
+    node.innerHTML = `<p class="muted">No V2 rules loaded yet.</p>`;
+    return;
+  }
+  const buckets = rulesCenterBuckets(rows);
+  node.innerHTML = [
+    rulesCenterSection("Critical / Trim", "Review before adding capital", [...buckets.trim, ...buckets.urgent], "negative", "No critical or trim rules are triggered."),
+    rulesCenterSection("Blocked Opportunities", "Good signal, portfolio says no", buckets.blocked, "warning", "No attractive ideas are blocked by hard rules."),
+    rulesCenterSection("Needs Review", "Caution before action", buckets.review, "ai", "No medium-priority review rules are active."),
+    rulesCenterSection("Buy / Add Eligible", "Allowed candidates", buckets.eligible, "live", "No buy/add candidates are currently eligible."),
+    rulesCenterSection("Data Problems", "Fix confidence first", buckets.data, "warning", "No data confidence issues found."),
+    rulesCenterSection("Monitor", "No immediate action", buckets.monitor, "neutral", "Nothing sitting in monitor.")
+  ].join("");
+}
+
+function renderRulesV2AuditTable() {
+  const tableNode = $("#rulesV2Table");
+  if (!tableNode) return;
+  const rows = state.rulesV2?.evaluations || [];
   tableNode.innerHTML = rows.length ? rows.map((item) => {
     const price = item.context?.price == null
       ? "n/a"
@@ -2063,6 +2284,28 @@ function renderRulesV2() {
       </div>
     `;
   }).join("") : `<p class="muted">No rules data found yet.</p>`;
+}
+
+function renderRulesV2() {
+  const statusNode = $("#rulesV2Status");
+  if (!statusNode) return;
+  renderRulesV2Summary();
+  renderRulesV2Command();
+  renderRulesV2Radar();
+  renderRulesV2Queues();
+  if (state.rulesV2Loading) {
+    statusNode.textContent = "Building today’s V2 action board...";
+    renderRulesV2AuditTable();
+    return;
+  }
+  if (!state.rulesV2) {
+    statusNode.textContent = state.rulesV2Error || "Rules V2 is active. Press Refresh Rules to load today’s action board.";
+    renderRulesV2AuditTable();
+    return;
+  }
+  const payload = state.rulesV2;
+  statusNode.textContent = `${payload.version} | Rules V2 active. Review signals only; the app never places trades.`;
+  renderRulesV2AuditTable();
 }
 
 async function loadRulesV2({ refresh = false } = {}) {

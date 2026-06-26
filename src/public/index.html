@@ -223,7 +223,7 @@
             <div class="button-row">
               <span class="status-pill" id="aiStatusBadge">Rules engine</span>
               <button class="button secondary" data-action="openRulesEditor" type="button">Edit Rules</button>
-              <button class="button secondary" data-view-jump="rules-v2" type="button">Rules V2 Compare</button>
+              <button class="button secondary" data-view-jump="rules-v2" type="button">Rules Center</button>
               <button class="button secondary" data-view-jump="alerts" type="button">Open Alerts</button>
             </div>
           </div>
@@ -575,27 +575,62 @@
         <section class="band rules-v2-hero">
           <div class="band-header">
             <div>
-              <p class="eyebrow">Rules Engine V2</p>
-              <h2>Old vs New Decision Comparison</h2>
-              <p class="muted" id="rulesV2Status">Read-only comparison. Existing dashboard rules remain active.</p>
+              <p class="eyebrow">Rules Center</p>
+              <h2>Today’s V2 Action Board</h2>
+              <p class="muted" id="rulesV2Status">Rules V2 is active. Review signals only; the app never places trades.</p>
             </div>
             <div class="button-row">
-              <button class="button secondary" data-action="refreshRulesV2" type="button">Refresh Comparison</button>
+              <button class="button secondary" data-action="refreshRulesV2" type="button">Refresh Rules</button>
+              <button class="button secondary" data-view-jump="alerts" data-scroll-target="alertsBand" type="button">Open Alerts</button>
               <button class="button primary" data-view-jump="dashboard" type="button">Back to Dashboard</button>
             </div>
           </div>
           <div id="rulesV2Summary" class="summary-grid compact-summary"></div>
         </section>
 
+        <section class="rules-center-grid">
+          <div class="band rules-center-command">
+            <div class="band-header">
+              <div>
+                <p class="eyebrow">Command</p>
+                <h2>What Needs Attention</h2>
+              </div>
+            </div>
+            <div id="rulesV2Command"></div>
+          </div>
+          <div class="band rules-center-radar">
+            <div class="band-header">
+              <div>
+                <p class="eyebrow">Radar</p>
+                <h2>Rule Pressure</h2>
+              </div>
+            </div>
+            <div id="rulesV2Radar"></div>
+          </div>
+        </section>
+
         <section class="band">
           <div class="band-header">
             <div>
-              <p class="eyebrow">Layered Decisions</p>
-              <h2>Portfolio and Watchlist Review</h2>
-              <p class="muted">This shows what V2 would say. It does not change alerts, lots, holdings, groups, or cash.</p>
+              <p class="eyebrow">Action Queues</p>
+              <h2>Triggered V2 Rules</h2>
+              <p class="muted">Grouped by what you should review first, with direct links to stock pages, portfolio, watchlists, and alerts.</p>
             </div>
           </div>
-          <div id="rulesV2Table" class="rules-v2-table compact-table"></div>
+          <div id="rulesV2Queues" class="rules-center-queues"></div>
+        </section>
+
+        <section class="band">
+          <details class="rules-audit-details">
+            <summary>
+              <span>
+                <span class="eyebrow">Advanced Audit</span>
+                <strong>Old engine vs Rules V2 comparison</strong>
+              </span>
+              <span class="muted">Open when something looks strange.</span>
+            </summary>
+            <div id="rulesV2Table" class="rules-v2-table compact-table"></div>
+          </details>
         </section>
       </section>
 
