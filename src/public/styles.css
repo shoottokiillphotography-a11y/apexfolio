@@ -1039,6 +1039,25 @@ main {
   background: rgba(203, 174, 112, 0.08);
 }
 
+.performance-view-tabs {
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card) 82%, transparent);
+}
+
+.performance-view-tabs .range-tab {
+  min-height: 30px;
+  border-color: transparent;
+  background: transparent;
+  padding-inline: 11px;
+}
+
+.performance-view-tabs .range-tab.active {
+  border-color: rgba(203, 174, 112, 0.62);
+  background: rgba(203, 174, 112, 0.12);
+}
+
 .performance-stats {
   display: flex;
   flex-direction: column;
@@ -1450,6 +1469,41 @@ main {
 .performance-warning-row {
   margin-top: 6px;
   color: var(--warning);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.bridge-label,
+.bridge-value {
+  fill: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.bridge-value.positive {
+  fill: var(--success);
+}
+
+.bridge-value.negative {
+  fill: var(--danger);
+}
+
+.bridge-bar {
+  opacity: 0.88;
+}
+
+.bridge-bar.positive {
+  fill: color-mix(in srgb, var(--success) 78%, var(--accent));
+}
+
+.bridge-bar.negative {
+  fill: color-mix(in srgb, var(--danger) 82%, var(--accent));
+}
+
+.rules-dedupe-note {
+  margin-top: -4px;
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
 }

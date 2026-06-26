@@ -4,7 +4,7 @@ import { calculatePortfolio } from "./calculations.js";
 import { convertAmount, getExchangeRate } from "./currency.js";
 
 const OPENING_BALANCE_KEY = "portfolio_wealth_opening_balance";
-const RANGE_FILTERS = new Set(["month", "ytd", "1y", "3y", "5y", "all"]);
+const RANGE_FILTERS = new Set(["1d", "month", "1mo", "ytd", "1y", "3y", "5y", "all"]);
 const SNAPSHOT_SOURCE_AUTO = "auto";
 const SNAPSHOT_SOURCE_MANUAL = "manual";
 
@@ -18,6 +18,7 @@ function isoDate(date) {
 
 function normalizeRange(input) {
   const range = String(input || "all").toLowerCase();
+  if (range === "1m") return "month";
   return RANGE_FILTERS.has(range) ? range : "all";
 }
 
@@ -26,7 +27,9 @@ function rangeStart(range, firstInvestmentDate) {
   now.setUTCHours(0, 0, 0, 0);
   const today = isoDate(now);
   if (range === "all") return firstInvestmentDate || today;
-  if (range === "month") {
+  if (range === "1d") {
+    now.setUTCDate(now.getUTCDate() - 1);
+  } else if (range === "month" || range === "1mo") {
     now.setUTCMonth(now.getUTCMonth() - 1);
   } else if (range === "ytd") {
     now.setUTCMonth(0, 1);
@@ -635,6 +638,78 @@ function realizedSummary(realizedEvents) {
   };
 }
 
+function buildWealthBridge({ summary, bookValue, dashboard }) {
+  const baseCurrency = dashboard?.user?.baseCurrency || dashboard?.user?.base_currency || null;
+  const currentPortfolioMarketValueBase = roundMoney(Number(summary.currentPortfolioMarketValueBase) || 0);
+  const netCapitalContributedBase = roundMoney(Number(summary.netCapitalContributedBase) || 0);
+  const netRealizedPnlBase = roundMoney(Number(summary.netRealizedPnlBase) || 0);
+  const dividendsBase = roundMoney(Number(summary.dividendsBase) || 0);
+  const cashExternalEvents = (bookValue?.events || [])
+    .filter((event) => ["external_income", "external_expense"].includes(event.type));
+  const externalCashBase = roundMoney(sum(cashExternalEvents.map((event) => event.amountBase)));
+  const unrealizedPnlBase = roundMoney(Number(dashboard?.summary?.unrealizedBase) || 0);
+  const explainedBase = roundMoney(
+    netCapitalContributedBase +
+    netRealizedPnlBase +
+    dividendsBase +
+    externalCashBase +
+    unrealizedPnlBase
+  );
+  const reconciliationBase = roundMoney(currentPortfolioMarketValueBase - explainedBase);
+  const items = [
+    {
+      key: "net_capital",
+      label: "Net capital contributed",
+      amountBase: netCapitalContributedBase,
+      kind: "capital",
+      description: "Opening balance, deposits, withdrawals and cash reconciliation movements."
+    },
+    {
+      key: "realized_pnl",
+      label: "Realized share P&L",
+      amountBase: netRealizedPnlBase,
+      kind: "investment",
+      description: "Confirmed gains and losses from sold shares."
+    },
+    {
+      key: "dividends",
+      label: "Dividends",
+      amountBase: dividendsBase,
+      kind: "income",
+      description: "CSV/imported dividend income."
+    },
+    {
+      key: "external_cash",
+      label: "External cash items",
+      amountBase: externalCashBase,
+      kind: "external",
+      description: "Only external income or expenses marked Add to cash."
+    },
+    {
+      key: "unrealized_pnl",
+      label: "Unrealized P&L",
+      amountBase: unrealizedPnlBase,
+      kind: "investment",
+      description: "Current market value of open holdings minus open-lot cost basis."
+    },
+    {
+      key: "reconciliation",
+      label: "Unreconciled / FX / fees",
+      amountBase: reconciliationBase,
+      kind: "reconciliation",
+      description: "Difference needed to reconcile the bridge to the Dashboard total."
+    }
+  ];
+  return {
+    baseCurrency,
+    items,
+    explainedBase,
+    reconciliationBase,
+    currentPortfolioMarketValueBase,
+    formula: "current value = net capital + realized P&L + dividends + external cash items + unrealized P&L + reconciliation"
+  };
+}
+
 export async function saveOpeningPortfolioBalance(userId, input = {}) {
   const database = getDb();
   const user = currentUser(database, userId);
@@ -896,6 +971,7 @@ export async function portfolioWealthTimeline(userId, options = {}) {
     manualSnapshotCount: actualPortfolioValue.summary.manualSnapshotCount,
     automaticSnapshotCount: actualPortfolioValue.summary.automaticSnapshotCount
   };
+  const wealthBridge = buildWealthBridge({ summary, bookValue, dashboard });
   const recommendedMode = actualPortfolioValue.points.length ? "portfolio_value" : "realized_growth";
   const warnings = [];
   if (!openingBalance.configured) warnings.push("Opening Portfolio Balance is not set. Historical cash before the first purchase may be incomplete.");
@@ -911,6 +987,7 @@ export async function portfolioWealthTimeline(userId, options = {}) {
     realizedGrowth: realized,
     bookValue,
     actualPortfolioValue,
+    wealthBridge,
     snapshots: actualPortfolioValue.snapshots,
     summary,
     dataQuality: {

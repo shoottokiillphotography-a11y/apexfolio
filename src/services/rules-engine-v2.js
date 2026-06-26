@@ -34,6 +34,18 @@ function actionRank(action) {
   return { TRIM: 0, REVIEW: 1, BUY: 2, ADD: 3, HOLD: 4, AVOID: 5 }[action] ?? 9;
 }
 
+function formatLargeNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "n/a";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(number);
+}
+
+function signedPp(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "0 pp";
+  return `${number >= 0 ? "+" : ""}${roundPercent(number)} pp`;
+}
+
 function priceFor(decision) {
   return finite(decision?.price?.price ?? decision?.price?.regularMarketPrice);
 }
@@ -193,7 +205,7 @@ function positionStateFor(decision, limits = DEFAULT_LIMITS) {
       state: "CRITICAL_CONCENTRATION",
       fitScore: 5,
       reasonCode: "POSITION_ABOVE_CRITICAL_LIMIT",
-      reason: `Position is ${roundPercent(exposure)}% of the portfolio.`
+      reason: `Position is ${roundPercent(exposure)}% of the portfolio versus a ${limits.positionCriticalPercent}% critical limit. Reduce concentration before adding capital.`
     };
   }
   if (exposure >= limits.positionHardPercent) {
@@ -201,7 +213,7 @@ function positionStateFor(decision, limits = DEFAULT_LIMITS) {
       state: "HARD_LIMIT",
       fitScore: 15,
       reasonCode: "POSITION_ABOVE_HARD_LIMIT",
-      reason: `Position is above the ${limits.positionHardPercent}% hard limit.`
+      reason: `Position is ${roundPercent(exposure)}% of the portfolio, above the ${limits.positionHardPercent}% hard limit.`
     };
   }
   if (exposure >= limits.positionSoftPercent) {
@@ -209,7 +221,7 @@ function positionStateFor(decision, limits = DEFAULT_LIMITS) {
       state: "SOFT_LIMIT",
       fitScore: 45,
       reasonCode: "POSITION_ABOVE_SOFT_LIMIT",
-      reason: `Position is above the ${limits.positionSoftPercent}% soft limit.`
+      reason: `Position is ${roundPercent(exposure)}% of the portfolio, above the ${limits.positionSoftPercent}% soft limit.`
     };
   }
   if (exposure >= limits.positionNormalPercent) {
@@ -217,7 +229,7 @@ function positionStateFor(decision, limits = DEFAULT_LIMITS) {
       state: "NEAR_LIMIT",
       fitScore: 62,
       reasonCode: "POSITION_NEAR_LIMIT",
-      reason: `Position is near the normal ${limits.positionNormalPercent}% size limit.`
+      reason: `Position is ${roundPercent(exposure)}% of the portfolio, close to the normal ${limits.positionNormalPercent}% size limit.`
     };
   }
   return {
@@ -253,7 +265,7 @@ function groupStateFor(decision, dashboard, limits = DEFAULT_LIMITS) {
       targetPercent: roundPercent(target),
       variancePP: roundPercent(variance),
       reasonCode: "GROUP_HARD_OVERWEIGHT",
-      reason: `${group.name} is ${roundPercent(variance)} percentage points above target.`
+      reason: `${group.name} is ${roundPercent(actual)}% versus a ${roundPercent(target)}% target (${signedPp(variance)}). This is a hard overweight, so adding here is blocked until the group is rebalanced.`
     };
   }
   if (variance > limits.groupOnTargetBandPP) {
@@ -265,7 +277,7 @@ function groupStateFor(decision, dashboard, limits = DEFAULT_LIMITS) {
       targetPercent: roundPercent(target),
       variancePP: roundPercent(variance),
       reasonCode: "GROUP_OVERWEIGHT",
-      reason: `${group.name} is above target.`
+      reason: `${group.name} is ${roundPercent(actual)}% versus a ${roundPercent(target)}% target (${signedPp(variance)}). New buys in this group need review.`
     };
   }
   if (variance < -limits.groupOnTargetBandPP) {
@@ -277,7 +289,7 @@ function groupStateFor(decision, dashboard, limits = DEFAULT_LIMITS) {
       targetPercent: roundPercent(target),
       variancePP: roundPercent(variance),
       reasonCode: "GROUP_UNDERWEIGHT",
-      reason: `${group.name} is below target.`
+      reason: `${group.name} is ${roundPercent(actual)}% versus a ${roundPercent(target)}% target (${signedPp(variance)}). It is under target, so sizing room exists if the stock-specific case is strong.`
     };
   }
   return {
@@ -312,7 +324,7 @@ function themeStateFor(decision, dashboard, limits = DEFAULT_LIMITS) {
       theme,
       exposurePercent: roundPercent(exposure),
       reasonCode: "THEME_HARD_LIMIT",
-      reason: `${theme} exposure is above the hard limit.`
+      reason: `${theme} exposure is ${roundPercent(exposure)}%, above the ${limits.themeHardPercent}% hard theme limit.`
     };
   }
   if (exposure >= limits.themeSoftPercent) {
@@ -322,7 +334,7 @@ function themeStateFor(decision, dashboard, limits = DEFAULT_LIMITS) {
       theme,
       exposurePercent: roundPercent(exposure),
       reasonCode: "THEME_SOFT_LIMIT",
-      reason: `${theme} exposure is elevated.`
+      reason: `${theme} exposure is ${roundPercent(exposure)}%, above the ${limits.themeSoftPercent}% soft theme limit.`
     };
   }
   return {
@@ -352,7 +364,7 @@ function liquidityStateFor(decision) {
       state: "LOW_LIQUIDITY",
       score: 30,
       reasonCode: "LOW_TRADING_VOLUME",
-      reason: "Trading volume looks low."
+      reason: `Trading volume is low: ${formatLargeNumber(reference)} shares versus the 100,000 normal minimum.`
     };
   }
   if (reference < 500000) {
@@ -360,7 +372,7 @@ function liquidityStateFor(decision) {
       state: "THIN",
       score: 58,
       reasonCode: "THIN_TRADING_VOLUME",
-      reason: "Trading volume is usable but thin."
+      reason: `Trading volume is thin: ${formatLargeNumber(reference)} shares versus the 500,000 preferred threshold.`
     };
   }
   return {
@@ -410,6 +422,22 @@ function tradeEligibilityFor(parts) {
   };
 }
 
+function partForReasonCode(parts, reasonCode) {
+  return [
+    parts.position,
+    parts.group,
+    parts.theme,
+    parts.data,
+    parts.thesis,
+    parts.liquidity,
+    parts.valuation
+  ].find((part) => part?.reasonCode === reasonCode) || null;
+}
+
+function explanationForIssue(parts, reasonCode, fallback) {
+  return partForReasonCode(parts, reasonCode)?.reason || fallback;
+}
+
 function finalActionFor(decision, parts) {
   const underlying = parts.valuation.underlyingSignal;
   const reasonCodes = [
@@ -427,7 +455,7 @@ function finalActionFor(decision, parts) {
       finalAction: "REVIEW",
       primaryReasonCode: "DATA_MISSING",
       secondaryReasonCodes: reasonCodes,
-      explanation: "Review because price data is missing."
+      explanation: parts.data.reason
     };
   }
   if (["CRITICAL_CONCENTRATION", "HARD_LIMIT"].includes(parts.position.state)) {
@@ -435,15 +463,25 @@ function finalActionFor(decision, parts) {
       finalAction: "TRIM",
       primaryReasonCode: parts.position.reasonCode,
       secondaryReasonCodes: reasonCodes,
-      explanation: "Position size overrides valuation attractiveness."
+      explanation: `${parts.position.reason} Position size overrides valuation attractiveness.`
     };
   }
   if (parts.tradeEligibility.state === "BLOCKED" && ["BUY", "ADD"].includes(underlying)) {
+    const blocker = parts.tradeEligibility.blockers[0];
     return {
       finalAction: "REVIEW",
-      primaryReasonCode: parts.tradeEligibility.blockers[0],
+      primaryReasonCode: blocker,
       secondaryReasonCodes: reasonCodes,
-      explanation: "The stock signal is attractive, but portfolio rules block adding."
+      explanation: `The valuation signal is ${underlying}, but ${explanationForIssue(parts, blocker, "a hard portfolio rule blocks adding.")}`
+    };
+  }
+  if (parts.tradeEligibility.state === "CAUTION" && ["BUY", "ADD"].includes(underlying)) {
+    const warning = parts.tradeEligibility.warnings[0] || parts.valuation.reasonCode;
+    return {
+      finalAction: "REVIEW",
+      primaryReasonCode: warning,
+      secondaryReasonCodes: reasonCodes,
+      explanation: `${explanationForIssue(parts, warning, parts.tradeEligibility.reason)} The signal is attractive, but this needs review before acting.`
     };
   }
   if (underlying === "TRIM") {
@@ -471,11 +509,12 @@ function finalActionFor(decision, parts) {
     };
   }
   if (underlying === "REVIEW" || parts.tradeEligibility.state === "CAUTION") {
+    const warning = parts.tradeEligibility.warnings[0] || parts.valuation.reasonCode;
     return {
       finalAction: "REVIEW",
-      primaryReasonCode: parts.tradeEligibility.warnings[0] || parts.valuation.reasonCode,
+      primaryReasonCode: warning,
       secondaryReasonCodes: reasonCodes,
-      explanation: parts.tradeEligibility.reason
+      explanation: explanationForIssue(parts, warning, parts.valuation.reason)
     };
   }
   return {
@@ -545,6 +584,8 @@ function evaluateDecision(decision, dashboard) {
       currency: decision?.price?.currency || null,
       exposurePercent: roundPercent(decision.exposurePercent || 0),
       groupName: group.groupName || null,
+      groupActualPercent: group.actualPercent ?? null,
+      groupTargetPercent: group.targetPercent ?? null,
       groupVariancePP: group.variancePP ?? null,
       theme: theme.theme || decision.theme || "Unclassified",
       themeExposurePercent: theme.exposurePercent ?? null,

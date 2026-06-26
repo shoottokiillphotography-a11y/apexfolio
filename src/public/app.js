@@ -157,6 +157,10 @@ const savedPerformanceMode = localStorage.getItem("portfolioPerformanceMode");
 const initialPerformanceMode = ["withCash", "withoutCash"].includes(savedPerformanceMode)
   ? savedPerformanceMode
   : "withoutCash";
+const savedPerformanceView = localStorage.getItem("portfolioPerformanceView");
+const initialPerformanceView = PORTFOLIO_PERFORMANCE_VIEWS.some(([view]) => view === savedPerformanceView)
+  ? savedPerformanceView
+  : "verified_value";
 const savedRealizedIncomeMode = localStorage.getItem("realizedIncomeMode");
 const realizedIncomeModeAliases = {
   investment_growth: "book_value",
@@ -194,6 +198,7 @@ const state = {
   importHistoryOpen: localStorage.getItem("importHistoryOpen") === "true",
   portfolioPerformanceRange: localStorage.getItem("portfolioPerformanceRange") || "1y",
   portfolioPerformanceMode: initialPerformanceMode,
+  portfolioPerformanceView: initialPerformanceView,
   portfolioPerformance: null,
   realizedIncome: null,
   portfolioWealth: null,
@@ -291,6 +296,11 @@ const PERFORMANCE_RANGES = [
   ["3y", "3Y"],
   ["5y", "5Y"],
   ["all", "ALL"]
+];
+const PORTFOLIO_PERFORMANCE_VIEWS = [
+  ["verified_value", "Verified Value", "Verified Portfolio Value"],
+  ["capital_journey", "Capital Journey", "Capital Journey"],
+  ["wealth_bridge", "Wealth Bridge", "Wealth Bridge"]
 ];
 const MARKET_CURRENCIES = [
   "USD",
@@ -651,11 +661,23 @@ function rangeTabsHtml(activeRange, scope, ranges = PERFORMANCE_RANGES) {
   `).join("");
 }
 
+function performanceViewTabsHtml(activeView) {
+  return PORTFOLIO_PERFORMANCE_VIEWS.map(([view, label]) => `
+    <button class="range-tab performance-view-tab ${view === activeView ? "active" : ""}" data-performance-view="${view}" type="button">
+      ${escapeHtml(label)}
+    </button>
+  `).join("");
+}
+
 function renderRangeTabs() {
   const dashboardRanges = $("#portfolioPerformanceRanges");
   if (dashboardRanges) dashboardRanges.innerHTML = rangeTabsHtml(state.portfolioPerformanceRange, "portfolio");
   const portfolioRanges = $("#portfolioPerformanceRangesPortfolio");
   if (portfolioRanges) portfolioRanges.innerHTML = rangeTabsHtml(state.portfolioPerformanceRange, "portfolio");
+  const dashboardViews = $("#portfolioPerformanceViews");
+  if (dashboardViews) dashboardViews.innerHTML = performanceViewTabsHtml(state.portfolioPerformanceView);
+  const portfolioViews = $("#portfolioPerformanceViewsPortfolio");
+  if (portfolioViews) portfolioViews.innerHTML = performanceViewTabsHtml(state.portfolioPerformanceView);
   const stockRanges = $("#stockPerformanceRanges");
   if (stockRanges) stockRanges.innerHTML = rangeTabsHtml(state.stockPerformanceRange, "stock");
 }
@@ -815,10 +837,10 @@ function attachChartHover(svg, points, dims, xAt, yAt, performance, mode) {
     dot.setAttribute("cx", x.toFixed(1));
     dot.setAttribute("cy", y.toFixed(1));
     tipDate.textContent = point.date;
-    tipVal.textContent = `${mode === "withoutCash" ? "Investment" : "Portfolio"}: ${fmtVal(point.value)}`;
-    tipSub.textContent = `Raw value: ${fmtVal(point.rawValue ?? point.value)}`;
+    tipVal.textContent = point.tooltipValue || `${mode === "withoutCash" ? "Investment" : "Portfolio"}: ${fmtVal(point.value)}`;
+    tipSub.textContent = point.tooltipSub || `Raw value: ${fmtVal(point.rawValue ?? point.value)}`;
     const returnText = point.returnPercent == null ? "n/a" : `${number(point.returnPercent, 2)}%`;
-    tipSub2.textContent = `Return: ${returnText}`;
+    tipSub2.textContent = point.tooltipSub2 || `Return: ${returnText}`;
     const textW = Math.max(
       tipDate.getComputedTextLength ? tipDate.getComputedTextLength() : 0,
       tipVal.getComputedTextLength ? tipVal.getComputedTextLength() : 0,
@@ -842,6 +864,23 @@ function attachChartHover(svg, points, dims, xAt, yAt, performance, mode) {
 }
 
 function performanceStatsHtml(performance, options = {}) {
+  if (performance?.stats?.length) {
+    const warningRows = (performance.warnings || []).slice(0, 3).map((warning) => `
+      <div class="performance-warning-row">${escapeHtml(warning)}</div>
+    `).join("");
+    return `
+      <div class="performance-metric-strip">
+        ${performance.stats.map((stat) => `
+          <div class="performance-stat">
+            <span>${escapeHtml(stat.label)}</span>
+            <strong class="${escapeHtml(stat.className || "")}">${escapeHtml(stat.value)}</strong>
+          </div>
+        `).join("")}
+      </div>
+      <div class="performance-provider-row">${escapeHtml(performance.providerNote || performance.provider || "")}</div>
+      ${warningRows}
+    `;
+  }
   if (!performance?.points?.length) return `<p class="muted">No performance data loaded yet.</p>`;
   const mode = options.portfolio ? state.portfolioPerformanceMode : "withCash";
   const plotted = performancePointsForMode(performance, mode);
@@ -1337,9 +1376,230 @@ async function refreshQuotesSafely() {
   }
 }
 
+function wealthRangeForPerformance(range) {
+  if (range === "1mo") return "month";
+  return range || "all";
+}
+
+function performanceViewMeta(view = state.portfolioPerformanceView) {
+  return PORTFOLIO_PERFORMANCE_VIEWS.find(([key]) => key === view) || PORTFOLIO_PERFORMANCE_VIEWS[0];
+}
+
+function statValue(value, currency, kind = "money") {
+  if (kind === "text") return String(value ?? "--");
+  if (kind === "number") return number(Number(value) || 0, 0);
+  if (kind === "signed") return signedMoney(Number(value) || 0, currency);
+  if (kind === "percent") return value == null ? "--" : `${number(Number(value), 2)}%`;
+  return money(Number(value) || 0, currency);
+}
+
+function stat(label, value, currency, kind = "money", className = "") {
+  return {
+    label,
+    value: statValue(value, currency, kind),
+    className: className || (kind === "signed" ? valueClass(Number(value) || 0) : "")
+  };
+}
+
+function dateRangeLabel(range) {
+  return {
+    "1d": "1D",
+    "1mo": "1M",
+    month: "1M",
+    ytd: "YTD",
+    "1y": "1Y",
+    "3y": "3Y",
+    "5y": "5Y",
+    all: "ALL"
+  }[range] || String(range || "Range").toUpperCase();
+}
+
+function verifiedPortfolioPerformance(wealth) {
+  const currency = wealth?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  const points = (wealth?.actualPortfolioValue?.points || [])
+    .map((point) => {
+      const value = Number(point.totalValueBase);
+      return {
+        ...point,
+        value,
+        rawValue: value,
+        date: point.date,
+        time: point.time,
+        tooltipValue: `Verified value: ${money(value, currency)}`,
+        tooltipSub: `Holdings ${money(point.holdingsValueBase || 0, currency)} | Cash ${money(point.cashValueBase || 0, currency)}`,
+        tooltipSub2: `${point.sourceLabel || point.source || "Snapshot"} | Coverage ${point.dataCoveragePercent == null ? "n/a" : `${number(point.dataCoveragePercent, 0)}%`}`
+      };
+    })
+    .filter((point) => Number.isFinite(point.value));
+  const first = points[0] || null;
+  const last = points.at(-1) || null;
+  const changeValue = first && last ? roundCurrency(last.value - first.value) : null;
+  const changePercent = first?.value ? roundDisplayPercent((changeValue / first.value) * 100) : null;
+  const warnings = [...(wealth?.dataQuality?.warnings || [])];
+  if (!points.length) {
+    warnings.unshift("No verified market-value snapshots exist yet. Refresh prices to save today's verified snapshot, or add a manual broker statement snapshot.");
+  } else if (points.length < 2) {
+    warnings.unshift("Only one verified snapshot is available, so return percentages are not shown yet.");
+  }
+  return {
+    range: state.portfolioPerformanceRange,
+    label: dateRangeLabel(state.portfolioPerformanceRange),
+    currency,
+    points,
+    changeValue,
+    changePercent,
+    provider: "portfolio snapshots",
+    providerNote: "Verified Value uses saved portfolio snapshots only. It does not use buy prices, cost basis, or fake historical market prices.",
+    warnings,
+    emptyMessage: "No verified portfolio snapshots for this range",
+    stats: [
+      stat("Current verified value", last?.value ?? wealth?.summary?.currentPortfolioMarketValueBase ?? 0, currency),
+      stat("First verified value", first?.value ?? null, currency, first ? "money" : "text"),
+      stat("Verified change", changeValue ?? 0, currency, "signed"),
+      stat("Snapshot return", changePercent, currency, "percent", valueClass(changeValue || 0)),
+      stat("Coverage", `${points.length} snapshot${points.length === 1 ? "" : "s"}`, currency, "text")
+    ]
+  };
+}
+
+function capitalJourneyPerformance(wealth) {
+  const currency = wealth?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  const points = (wealth?.bookValue?.points || [])
+    .map((point) => {
+      const value = Number(point.bookValueBase);
+      return {
+        ...point,
+        value,
+        rawValue: value,
+        adjustedValue: Number(point.netCapitalContributedBase || 0),
+        date: point.date,
+        time: point.time,
+        tooltipValue: `Book value: ${money(value, currency)}`,
+        tooltipSub: `Open cost ${money(point.remainingCostBasisBase || 0, currency)} | Cash ${money(point.cashValueBase || 0, currency)}`,
+        tooltipSub2: `Net capital ${money(point.netCapitalContributedBase || 0, currency)}${point.estimated ? " | estimated cash reconciliation" : ""}`
+      };
+    })
+    .filter((point) => Number.isFinite(point.value));
+  const first = points[0] || null;
+  const last = points.at(-1) || null;
+  const changeValue = first && last ? roundCurrency(last.value - first.value) : null;
+  const summary = wealth?.summary || {};
+  return {
+    range: state.portfolioPerformanceRange,
+    label: dateRangeLabel(state.portfolioPerformanceRange),
+    currency,
+    points,
+    changeValue,
+    provider: "confirmed transactions",
+    providerNote: "Capital Journey is book/accounting value only. It does not include historical unrealized market gains.",
+    warnings: [wealth?.bookValue?.label || "Book value - does not include historical unrealized market gains.", ...(wealth?.dataQuality?.warnings || [])],
+    emptyMessage: "No transaction-based capital history for this range",
+    stats: [
+      stat("Accounting capital", last?.value ?? 0, currency),
+      stat("Net capital contributed", summary.netCapitalContributedBase || 0, currency, "signed"),
+      stat("Open cost basis", summary.currentOpenCostBasisBase || 0, currency),
+      stat("Portfolio cash", summary.currentCashBase || 0, currency),
+      stat("Cash reconciliation", wealth?.bookValue?.summary?.cashReconciliationBase || 0, currency, "signed")
+    ]
+  };
+}
+
+function wealthBridgePerformance(wealth) {
+  const currency = wealth?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD";
+  const bridge = wealth?.wealthBridge || {};
+  const current = Number(bridge.currentPortfolioMarketValueBase ?? wealth?.summary?.currentPortfolioMarketValueBase ?? 0);
+  const reconciliation = Number(bridge.reconciliationBase || 0);
+  const items = bridge.items || [];
+  return {
+    range: state.portfolioPerformanceRange,
+    label: "Bridge",
+    currency,
+    points: [
+      { date: "Start", value: 0 },
+      { date: "Current", value: current }
+    ],
+    changeValue: current,
+    provider: "dashboard reconciliation",
+    providerNote: "Wealth Bridge reconciles current value from confirmed capital, realized results, dividends, external cash items, unrealized P&L and residual differences.",
+    warnings: Math.abs(reconciliation) >= 0.01
+      ? [`Bridge reconciliation difference is ${signedMoney(reconciliation, currency)}. This usually means missing deposit/withdrawal, FX, fee, tax, or broker cash history.`]
+      : [],
+    emptyMessage: "No bridge data available",
+    bridge: { ...bridge, items, currentPortfolioMarketValueBase: current },
+    stats: [
+      stat("Current value", current, currency),
+      stat("Net capital", items.find((item) => item.key === "net_capital")?.amountBase || 0, currency, "signed"),
+      stat("Realized + dividends", (wealth?.summary?.netRealizedPnlBase || 0) + (wealth?.summary?.dividendsBase || 0), currency, "signed"),
+      stat("Unrealized", items.find((item) => item.key === "unrealized_pnl")?.amountBase || 0, currency, "signed"),
+      stat("Reconciliation", reconciliation, currency, "signed")
+    ]
+  };
+}
+
+function portfolioPerformanceForView(wealth = state.portfolioPerformance) {
+  if (state.portfolioPerformanceView === "capital_journey") return capitalJourneyPerformance(wealth);
+  if (state.portfolioPerformanceView === "wealth_bridge") return wealthBridgePerformance(wealth);
+  return verifiedPortfolioPerformance(wealth);
+}
+
+function renderWealthBridgeChart(selector, performance) {
+  const svg = $(selector);
+  if (!svg) return;
+  const items = performance?.bridge?.items || [];
+  const currency = performance?.currency || state.dashboard?.user?.baseCurrency || "AUD";
+  if (!items.length) {
+    svg.innerHTML = `<text x="450" y="145" text-anchor="middle" class="chart-empty">No wealth bridge data available</text>`;
+    return;
+  }
+  const viewBox = (svg.getAttribute("viewBox") || "0 0 900 280").split(/\s+/).map(Number);
+  const width = viewBox[2] || 900;
+  const height = viewBox[3] || 280;
+  const pad = { left: 165, right: 105, top: 24, bottom: 28 };
+  const rowH = Math.min(30, (height - pad.top - pad.bottom) / Math.max(1, items.length + 1));
+  let running = 0;
+  const spans = [];
+  for (const item of items) {
+    const start = running;
+    running = roundCurrency(running + Number(item.amountBase || 0));
+    spans.push({ ...item, start, end: running });
+  }
+  const values = spans.flatMap((item) => [item.start, item.end, 0, performance.bridge.currentPortfolioMarketValueBase || 0]);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const xFor = (value) => pad.left + ((value - min) / span) * (width - pad.left - pad.right);
+  const zeroX = xFor(0);
+  const rows = spans.map((item, index) => {
+    const y = pad.top + index * rowH;
+    const x1 = xFor(item.start);
+    const x2 = xFor(item.end);
+    const x = Math.min(x1, x2);
+    const w = Math.max(3, Math.abs(x2 - x1));
+    const cls = Number(item.amountBase) >= 0 ? "positive" : "negative";
+    return `
+      <text x="16" y="${y + 18}" class="bridge-label">${escapeHtml(item.label)}</text>
+      <line x1="${zeroX}" x2="${zeroX}" y1="${y + 4}" y2="${y + rowH - 6}" class="chart-zero-line"></line>
+      <rect x="${x}" y="${y + 4}" width="${w}" height="${Math.max(10, rowH - 10)}" rx="5" class="bridge-bar ${cls}"></rect>
+      <text x="${width - 18}" y="${y + 18}" text-anchor="end" class="bridge-value ${cls}">${escapeHtml(signedMoney(item.amountBase || 0, currency))}</text>
+    `;
+  }).join("");
+  svg.innerHTML = `
+    <rect width="${width}" height="${height}" rx="18" class="chart-empty-bg"></rect>
+    <line x1="${pad.left}" x2="${width - pad.right}" y1="${height - pad.bottom}" y2="${height - pad.bottom}" class="chart-grid-line"></line>
+    ${rows}
+    <text x="${pad.left}" y="${height - 10}" class="chart-label">${escapeHtml(money(min, currency))}</text>
+    <text x="${width - pad.right}" y="${height - 10}" text-anchor="end" class="chart-label">${escapeHtml(money(max, currency))}</text>
+  `;
+}
+
 function renderPortfolioPerformance() {
   renderRangeTabs();
-  const performance = currentPortfolioPerformance(state.portfolioPerformance);
+  const performance = portfolioPerformanceForView(state.portfolioPerformance);
+  const [, , title] = performanceViewMeta();
+  ["#portfolioPerformanceTitle", "#portfolioPerformanceTitlePortfolio"].forEach((selector) => {
+    const node = $(selector);
+    if (node) node.textContent = title;
+  });
   document.querySelectorAll("[data-performance-card]").forEach((card) => {
     const dashboardCard = card.dataset.performanceCard === "dashboard";
     const collapsed = dashboardCard ? state.dashboardChartCollapsed : state.portfolioChartCollapsed;
@@ -1347,16 +1607,9 @@ function renderPortfolioPerformance() {
     const button = card.querySelector('[data-action="togglePortfolioChart"]');
     if (button) button.textContent = collapsed ? "Show chart" : "Hide chart";
   });
-  const modeToggle = $("#performanceModeToggle");
-  if (modeToggle) {
-    modeToggle.textContent = state.portfolioPerformanceMode === "withCash" ? "Portfolio Value" : "Investment Return";
-    modeToggle.title = state.portfolioPerformanceMode === "withCash"
-      ? "Total portfolio value: holdings plus transaction-aware cash"
-      : "Unitized investment return; deposits and withdrawals are neutralized";
-  }
   const loadingText = state.portfolioPerformanceLoading ? "Loading performance history..." : "Choose a range to load performance.";
   const statusText = performance?.points?.length
-    ? `${performance.points.length} points | ${performance.warnings?.length ? `${performance.warnings.length} data gaps` : (performance.provider || "historical prices")}`
+    ? `${performance.points.length} points | ${performance.provider || "portfolio data"}`
     : loadingText;
   ["#portfolioPerformanceStatus", "#portfolioPerformanceStatusPortfolio"].forEach((selector) => {
     const node = $(selector);
@@ -1368,29 +1621,38 @@ function renderPortfolioPerformance() {
   });
   const emptyMessage = state.portfolioPerformanceLoading
     ? "Loading performance history..."
-    : performance?.warnings?.some((warning) => !/cash-flow/i.test(warning))
-      ? "Some historical prices are unavailable for this range"
-      : "Choose a range to load performance";
-  if (!state.dashboardChartCollapsed) renderPerformanceChart("#portfolioPerformanceChart", performance, emptyMessage, state.portfolioPerformanceMode);
-  if (!state.portfolioChartCollapsed) renderPerformanceChart("#portfolioPerformanceChartPortfolio", performance, emptyMessage, state.portfolioPerformanceMode);
+    : performance?.emptyMessage || "Choose a range to load performance";
+  if (!state.dashboardChartCollapsed) {
+    if (state.portfolioPerformanceView === "wealth_bridge") renderWealthBridgeChart("#portfolioPerformanceChart", performance);
+    else renderPerformanceChart("#portfolioPerformanceChart", performance, emptyMessage, "withCash");
+  }
+  if (!state.portfolioChartCollapsed) {
+    if (state.portfolioPerformanceView === "wealth_bridge") renderWealthBridgeChart("#portfolioPerformanceChartPortfolio", performance);
+    else renderPerformanceChart("#portfolioPerformanceChartPortfolio", performance, emptyMessage, "withCash");
+  }
 }
 
 async function loadPortfolioPerformance(range = state.portfolioPerformanceRange, { force = false } = {}) {
   if (state.portfolioPerformanceLoading) return;
-  if (!force && state.portfolioPerformance?.range === range) {
+  if (!force && state.portfolioPerformance?.requestedRange === range) {
     renderPortfolioPerformance();
     return;
   }
   state.portfolioPerformanceLoading = true;
   renderPortfolioPerformance();
   try {
-    state.portfolioPerformance = await api(`/api/performance/portfolio?range=${encodeURIComponent(range)}`);
+    const wealthRange = wealthRangeForPerformance(range);
+    state.portfolioPerformance = await api(`/api/portfolio-wealth?range=${encodeURIComponent(wealthRange)}`);
+    state.portfolioPerformance.requestedRange = range;
   } catch (error) {
     state.portfolioPerformance = {
+      requestedRange: range,
       range,
-      currency: state.dashboard?.user?.baseCurrency || "USD",
-      points: [],
-      warnings: [error.message]
+      baseCurrency: state.dashboard?.user?.baseCurrency || "USD",
+      actualPortfolioValue: { points: [] },
+      bookValue: { points: [] },
+      wealthBridge: { items: [] },
+      dataQuality: { warnings: [error.message] }
     };
   } finally {
     state.portfolioPerformanceLoading = false;
@@ -2003,20 +2265,64 @@ function rulesCenterBuckets(rows = []) {
     data: [],
     monitor: []
   };
+  const priorityWeight = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+  const actionWeight = { TRIM: 0, REVIEW: 1, BUY: 2, ADD: 3, HOLD: 4, AVOID: 5 };
+  const tickerCounts = rows.reduce((map, item) => {
+    const ticker = String(item.ticker || "").toUpperCase();
+    if (!ticker) return map;
+    if (!map.has(ticker)) map.set(ticker, { count: 0, scopes: new Set(), watchlists: new Set() });
+    const entry = map.get(ticker);
+    entry.count += 1;
+    if (item.scope) entry.scopes.add(item.scope);
+    if (item.watchlistName) entry.watchlists.add(item.watchlistName);
+    return map;
+  }, new Map());
+  const queueRows = [...rows].sort((a, b) => {
+    const portfolioA = a.scope === "PORTFOLIO" ? 0 : 1;
+    const portfolioB = b.scope === "PORTFOLIO" ? 0 : 1;
+    if (portfolioA !== portfolioB) return portfolioA - portfolioB;
+    const priorityA = priorityWeight[a.priority] ?? 9;
+    const priorityB = priorityWeight[b.priority] ?? 9;
+    if (priorityA !== priorityB) return priorityA - priorityB;
+    const actionA = actionWeight[a.finalAction] ?? 9;
+    const actionB = actionWeight[b.finalAction] ?? 9;
+    if (actionA !== actionB) return actionA - actionB;
+    return String(a.ticker || "").localeCompare(String(b.ticker || ""));
+  });
   const seenPrimary = new Set();
-  const keyFor = (item) => `${item.scope || ""}:${item.ticker || ""}:${item.watchlistItemId || ""}:${item.primaryReasonCode || ""}`;
+  const seenData = new Set();
+  const keyFor = (item) => String(item.ticker || "").toUpperCase();
   const add = (bucket, item) => {
     const key = keyFor(item);
+    if (!key) return;
     if (seenPrimary.has(key)) return;
     seenPrimary.add(key);
-    bucket.push(item);
+    const duplicateMeta = tickerCounts.get(key);
+    bucket.push({
+      ...item,
+      duplicateCount: duplicateMeta?.count || 1,
+      duplicateScopes: duplicateMeta ? [...duplicateMeta.scopes] : [],
+      duplicateWatchlists: duplicateMeta ? [...duplicateMeta.watchlists] : []
+    });
+  };
+  const addData = (item) => {
+    const key = keyFor(item);
+    if (!key || seenData.has(key)) return;
+    seenData.add(key);
+    const duplicateMeta = tickerCounts.get(key);
+    buckets.data.push({
+      ...item,
+      duplicateCount: duplicateMeta?.count || 1,
+      duplicateScopes: duplicateMeta ? [...duplicateMeta.scopes] : [],
+      duplicateWatchlists: duplicateMeta ? [...duplicateMeta.watchlists] : []
+    });
   };
 
-  for (const item of rows) {
+  for (const item of queueRows) {
     const hasDataIssue = item.dataState && item.dataState !== "OK";
     const isBlockedOpportunity = ["BUY", "ADD"].includes(item.underlyingSignal) && item.tradeEligibility === "BLOCKED";
     const isUrgent = ["Critical", "High"].includes(item.priority);
-    if (hasDataIssue) buckets.data.push(item);
+    if (hasDataIssue) addData(item);
     if (isBlockedOpportunity) {
       add(buckets.blocked, item);
     } else if (item.finalAction === "TRIM") {
@@ -2158,6 +2464,9 @@ function rulesCenterCard(item, tone = "neutral") {
     `Data ${scores.dataConfidence ?? "n/a"}`
   ].join(" / ");
   const alertScope = item.scope === "WATCHLIST" ? "WATCHLIST" : "EQUITY";
+  const duplicateNote = item.duplicateCount > 1
+    ? `<div class="rules-dedupe-note">Also found in ${escapeHtml(item.duplicateWatchlists?.length ? item.duplicateWatchlists.join(", ") : item.duplicateScopes.join(" + "))}. Showing the highest-priority ${item.scope === "PORTFOLIO" ? "portfolio" : "watchlist"} rule.</div>`
+    : "";
   return `
     <article class="rules-action-card ${escapeHtml(tone)}">
       <div class="rules-action-head">
@@ -2174,6 +2483,7 @@ function rulesCenterCard(item, tone = "neutral") {
       </div>
       <h3>${escapeHtml(item.primaryReasonCode || "RULE_TRIGGERED")}</h3>
       <p>${escapeHtml(item.explanation || "Review this rule output.")}</p>
+      ${duplicateNote}
       <div class="rules-action-context">
         <span>${escapeHtml(price)}</span>
         <span>${escapeHtml(item.context?.groupName || item.context?.theme || "Unclassified")}</span>
@@ -7035,6 +7345,12 @@ document.addEventListener("click", async (event) => {
     }
     if (target.dataset.openStock) {
       await openStockPage(target.dataset.openStock);
+      return;
+    }
+    if (target.dataset.performanceView) {
+      state.portfolioPerformanceView = target.dataset.performanceView;
+      localStorage.setItem("portfolioPerformanceView", state.portfolioPerformanceView);
+      renderPortfolioPerformance();
       return;
     }
     if (target.dataset.performanceRange) {

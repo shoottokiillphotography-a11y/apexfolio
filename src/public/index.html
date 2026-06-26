@@ -186,11 +186,11 @@
             <div class="band-header">
               <div>
                 <p class="eyebrow">Performance</p>
-                <h2>Compact Performance</h2>
+                <h2 id="portfolioPerformanceTitle">Verified Portfolio Value</h2>
                 <p class="muted" id="portfolioPerformanceStatus">Loading historical performance...</p>
               </div>
               <div class="button-row">
-                <button class="button secondary" data-action="togglePerformanceMode" type="button" id="performanceModeToggle">Investment Return</button>
+                <div class="range-tabs performance-view-tabs" id="portfolioPerformanceViews" aria-label="Portfolio performance view"></div>
                 <button class="button secondary" data-action="togglePortfolioChart" type="button">Show chart</button>
                 <div class="range-tabs compact-ranges" id="portfolioPerformanceRanges" aria-label="Portfolio performance range"></div>
               </div>
@@ -275,10 +275,11 @@
           <div class="band-header">
             <div>
               <p class="eyebrow">Performance</p>
-              <h2>Portfolio Performance</h2>
+              <h2 id="portfolioPerformanceTitlePortfolio">Verified Portfolio Value</h2>
               <p class="muted" id="portfolioPerformanceStatusPortfolio">Same historical view, shown here for full holdings work.</p>
             </div>
             <div class="button-row">
+              <div class="range-tabs performance-view-tabs" id="portfolioPerformanceViewsPortfolio" aria-label="Portfolio performance view"></div>
               <button class="button secondary" data-action="togglePortfolioChart" type="button">Hide chart</button>
               <div class="range-tabs" id="portfolioPerformanceRangesPortfolio" aria-label="Portfolio performance range"></div>
             </div>
