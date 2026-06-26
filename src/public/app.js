@@ -157,6 +157,11 @@ const savedPerformanceMode = localStorage.getItem("portfolioPerformanceMode");
 const initialPerformanceMode = ["withCash", "withoutCash"].includes(savedPerformanceMode)
   ? savedPerformanceMode
   : "withoutCash";
+const PORTFOLIO_PERFORMANCE_VIEWS = [
+  ["verified_value", "Verified Value", "Verified Portfolio Value"],
+  ["capital_journey", "Capital Journey", "Capital Journey"],
+  ["wealth_bridge", "Wealth Bridge", "Wealth Bridge"]
+];
 const savedPerformanceView = localStorage.getItem("portfolioPerformanceView");
 const initialPerformanceView = PORTFOLIO_PERFORMANCE_VIEWS.some(([view]) => view === savedPerformanceView)
   ? savedPerformanceView
@@ -296,11 +301,6 @@ const PERFORMANCE_RANGES = [
   ["3y", "3Y"],
   ["5y", "5Y"],
   ["all", "ALL"]
-];
-const PORTFOLIO_PERFORMANCE_VIEWS = [
-  ["verified_value", "Verified Value", "Verified Portfolio Value"],
-  ["capital_journey", "Capital Journey", "Capital Journey"],
-  ["wealth_bridge", "Wealth Bridge", "Wealth Bridge"]
 ];
 const MARKET_CURRENCIES = [
   "USD",
