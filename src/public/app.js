@@ -1903,7 +1903,12 @@ function renderDashboardIntelligence() {
   if (!data || !$("#dashboardCommand")) return;
   const { user } = state.dashboard;
   const priorityClass = data.command.priority === "High" ? "negative" : data.command.priority === "Medium" ? "warning" : "live";
-  $("#dashboardIntelligenceStatus").textContent = `${data.mode === "rules" ? "Rules engine active" : "AI intelligence active"} | Future AI-ready architecture`;
+  const modeLabel = data.mode === "rules-v2"
+    ? `Rules V2 active${data.rulesVersion ? ` | ${data.rulesVersion}` : ""}`
+    : data.mode === "rules"
+      ? "Rules engine active"
+      : "AI intelligence active";
+  $("#dashboardIntelligenceStatus").textContent = `${modeLabel} | Decision support only`;
   const t = data.thresholds || {};
   const playbook = data.playbook || "";
   $("#dashboardCommand").innerHTML = `

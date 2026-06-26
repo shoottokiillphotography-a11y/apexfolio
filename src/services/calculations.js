@@ -23,6 +23,7 @@ import { listImportBatches } from "./importer.js";
 import { resolveWatchlist } from "./watchlists.js";
 import { buildIntelligence } from "./intelligence.js";
 import { buildDashboardIntelligence } from "./dashboard-intelligence.js";
+import { buildActiveRulesEngineV2 } from "./rules-engine-v2.js";
 import { getRules, saveRules, resetRules, DEFAULT_RULES } from "./rules.js";
 import { fundamentalsFromRows } from "./fundamentals.js";
 
@@ -817,7 +818,7 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
     role: user.role || "member",
     baseCurrency
   };
-  const intelligence = buildIntelligence({
+  const legacyIntelligence = buildIntelligence({
     positions: positionList,
     watchlist,
     allocation,
@@ -825,6 +826,19 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
     summary,
     user: userView
   });
+  const rulesV2 = buildActiveRulesEngineV2({
+    dashboard: {
+      positions: positionList,
+      watchlist,
+      allocation,
+      cashBalances,
+      summary,
+      user: userView,
+      intelligence: legacyIntelligence
+    },
+    oldIntelligence: legacyIntelligence
+  });
+  const intelligence = rulesV2.intelligence;
   const rules = getRules(userId, database);
   const dashboardIntelligence = buildDashboardIntelligence({
     positions: positionList,
@@ -861,6 +875,7 @@ export async function calculatePortfolio(userId, { refreshPrices = false } = {})
         : Boolean(config.sendgridApiKey && config.sendgridFromEmail)
     },
     intelligence,
+    rulesV2Comparison: rulesV2.comparison,
     dashboardIntelligence,
     imports: listImportBatches(database, userId),
     warnings

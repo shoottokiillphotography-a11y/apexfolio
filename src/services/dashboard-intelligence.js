@@ -162,7 +162,8 @@ export function buildDashboardIntelligence({
   }));
 
   return {
-    mode: "rules",
+    mode: intelligence.mode || "rules",
+    rulesVersion: intelligence.rulesVersion || null,
     aiReady: true,
     command,
     risks: risks.slice(0, 5),

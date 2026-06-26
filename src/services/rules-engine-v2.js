@@ -30,6 +30,10 @@ function priorityRank(priority) {
   return { Critical: 0, High: 1, Medium: 2, Low: 3 }[priority] ?? 4;
 }
 
+function actionRank(action) {
+  return { TRIM: 0, REVIEW: 1, BUY: 2, ADD: 3, HOLD: 4, AVOID: 5 }[action] ?? 9;
+}
+
 function priceFor(decision) {
   return finite(decision?.price?.price ?? decision?.price?.regularMarketPrice);
 }
@@ -510,6 +514,9 @@ function evaluateDecision(decision, dashboard) {
     name: decision.name || "",
     scope: decision.scope || (decision.isHeld ? "PORTFOLIO" : "WATCHLIST"),
     isHeld: Boolean(decision.isHeld),
+    watchlistItemId: decision.watchlistItemId || decision.watchlistItem?.id || null,
+    watchlistId: decision.watchlistId || decision.watchlistItem?.watchlistId || null,
+    watchlistName: decision.watchlistName || decision.watchlistItem?.watchlistName || null,
     oldAction: decision.status || "UNKNOWN",
     valuationState: valuation.state,
     thesisState: thesis.state,
@@ -555,13 +562,13 @@ function evaluateDecision(decision, dashboard) {
   };
 }
 
-export function buildRulesEngineComparison(dashboard) {
+function enrichedOldDecisions(dashboard) {
   const positionsByTicker = new Map((dashboard?.positions || []).map((position) => [position.ticker, position]));
   const watchlistByTicker = new Map();
   for (const item of dashboard?.watchlist || []) {
     if (!watchlistByTicker.has(item.ticker)) watchlistByTicker.set(item.ticker, item);
   }
-  const oldDecisions = [
+  return [
     ...(dashboard?.intelligence?.portfolioDecisions || []),
     ...(dashboard?.intelligence?.watchlistDecisions || [])
   ].map((decision) => {
@@ -574,6 +581,10 @@ export function buildRulesEngineComparison(dashboard) {
       categoryName: position?.categoryName || watchlistItem?.categoryName || decision.categoryName || decision.theme
     };
   });
+}
+
+export function buildRulesEngineComparison(dashboard) {
+  const oldDecisions = enrichedOldDecisions(dashboard);
   const evaluations = oldDecisions.map((decision) => evaluateDecision(decision, dashboard));
   const changed = evaluations.filter((item) => item.oldAction !== item.finalAction);
   const blockers = evaluations.filter((item) => item.tradeEligibility === "BLOCKED");
@@ -611,4 +622,222 @@ export function buildRulesEngineComparison(dashboard) {
       }
     }))
   };
+}
+
+function evaluationKey(item) {
+  return [
+    item.scope || "",
+    item.ticker || "",
+    item.watchlistItemId || ""
+  ].join("|");
+}
+
+function activeConviction(evaluation) {
+  const scores = evaluation?.scores || {};
+  return Math.max(0, Math.min(100, Math.round(
+    (Number(scores.thesisConviction) || 0) * 0.34
+    + (Number(scores.valuationOpportunity) || 0) * 0.28
+    + (Number(scores.portfolioFit) || 0) * 0.26
+    + (Number(scores.dataConfidence) || 0) * 0.12
+  )));
+}
+
+function riskLevelFromPriority(priority) {
+  if (priority === "Critical" || priority === "High") return "High";
+  if (priority === "Medium") return "Medium";
+  return "Low";
+}
+
+function activateDecision(decision, evaluation) {
+  if (!evaluation) return decision;
+  return {
+    ...decision,
+    oldStatus: decision.status,
+    status: evaluation.finalAction,
+    reason: evaluation.explanation || decision.reason,
+    riskLevel: riskLevelFromPriority(evaluation.priority),
+    convictionScore: activeConviction(evaluation),
+    tradeEligibility: evaluation.tradeEligibility,
+    underlyingSignal: evaluation.underlyingSignal,
+    valuationState: evaluation.valuationState,
+    thesisState: evaluation.thesisState,
+    positionState: evaluation.positionState,
+    groupState: evaluation.groupState,
+    themeState: evaluation.themeState,
+    liquidityState: evaluation.liquidityState,
+    dataState: evaluation.dataState,
+    primaryReasonCode: evaluation.primaryReasonCode,
+    secondaryReasonCodes: evaluation.secondaryReasonCodes,
+    rulesVersion: evaluation.rulesVersion,
+    evaluatedAt: evaluation.evaluatedAt,
+    v2: evaluation
+  };
+}
+
+function sortActiveDecisions(items) {
+  return [...items].sort((a, b) => (
+    priorityRank(a.v2?.priority) - priorityRank(b.v2?.priority)
+    || actionRank(a.status) - actionRank(b.status)
+    || (b.convictionScore || 0) - (a.convictionScore || 0)
+    || String(a.ticker || "").localeCompare(String(b.ticker || ""))
+  ));
+}
+
+function summarizeBy(items, field) {
+  const totals = new Map();
+  for (const item of items) {
+    const key = item[field] || "Unknown";
+    const existing = totals.get(key) || { name: key, count: 0, exposurePercent: 0 };
+    existing.count += 1;
+    existing.exposurePercent += item.exposurePercent || 0;
+    totals.set(key, existing);
+  }
+  return [...totals.values()]
+    .map((item) => ({ ...item, exposurePercent: roundPercent(item.exposurePercent) || 0 }))
+    .sort((a, b) => (b.exposurePercent || 0) - (a.exposurePercent || 0) || b.count - a.count);
+}
+
+function activeSummary(decisions, portfolioDecisions, watchlistDecisions) {
+  const count = (status, items = decisions) => items.filter((item) => item.status === status).length;
+  return {
+    monitoredCount: decisions.length,
+    portfolioCount: portfolioDecisions.length,
+    watchlistCount: watchlistDecisions.length,
+    buyCount: count("BUY"),
+    addCount: count("ADD"),
+    reviewCount: count("REVIEW"),
+    trimCount: count("TRIM"),
+    portfolioReviewCount: count("REVIEW", portfolioDecisions),
+    portfolioTrimCount: count("TRIM", portfolioDecisions),
+    watchlistBuyCount: count("BUY", watchlistDecisions),
+    watchlistAddCount: count("ADD", watchlistDecisions),
+    averageConviction: decisions.length
+      ? Math.round(decisions.reduce((total, item) => total + (item.convictionScore || 0), 0) / decisions.length)
+      : 0
+  };
+}
+
+function activeRisks(portfolioDecisions, fallbackRisks = []) {
+  const v2Risks = portfolioDecisions
+    .filter((item) => ["Critical", "High", "Medium"].includes(item.v2?.priority))
+    .slice(0, 6)
+    .map((item) => ({
+      kind: item.primaryReasonCode || "Rules V2",
+      severity: riskLevelFromPriority(item.v2?.priority),
+      text: `${item.ticker}: ${item.reason}`,
+      ticker: item.ticker
+    }));
+  return v2Risks.length ? v2Risks : fallbackRisks;
+}
+
+function activeCapitalPlan(decisions, oldPlan = {}, user = {}) {
+  const candidates = decisions
+    .filter((item) => ["BUY", "ADD"].includes(item.status) && item.tradeEligibility !== "BLOCKED")
+    .sort((a, b) => (b.convictionScore || 0) - (a.convictionScore || 0))
+    .slice(0, 6);
+  const cashBase = roundMoney(oldPlan.cashBase || 0);
+  const totalScore = candidates.reduce((total, item) => total + (item.convictionScore || 0), 0) || 1;
+  return {
+    ...oldPlan,
+    cashBase,
+    currency: oldPlan.currency || user.baseCurrency || "AUD",
+    priorityBuys: candidates.map((item) => ({
+      ticker: item.ticker,
+      status: item.status,
+      theme: item.theme,
+      convictionScore: item.convictionScore,
+      suggestedPercent: roundPercent((item.convictionScore / totalScore) * 100),
+      suggestedAmountBase: roundMoney(cashBase * (item.convictionScore / totalScore)),
+      reason: item.reason
+    }))
+  };
+}
+
+function activeWatchlistLists(watchlistDecisions) {
+  const lists = new Map();
+  for (const item of watchlistDecisions) {
+    const id = item.watchlistId || "default";
+    const list = lists.get(id) || {
+      id,
+      name: item.watchlistName || "Default",
+      sortOrder: item.watchlistSortOrder || 0,
+      count: 0,
+      ownedCount: 0,
+      buyCount: 0,
+      addCount: 0,
+      reviewCount: 0,
+      trimCount: 0,
+      averageConviction: 0,
+      convictionTotal: 0,
+      themes: new Map(),
+      priority: null
+    };
+    list.count += 1;
+    list.ownedCount += item.alreadyOwned ? 1 : 0;
+    list.buyCount += item.status === "BUY" ? 1 : 0;
+    list.addCount += item.status === "ADD" ? 1 : 0;
+    list.reviewCount += item.status === "REVIEW" ? 1 : 0;
+    list.trimCount += item.status === "TRIM" ? 1 : 0;
+    list.convictionTotal += item.convictionScore || 0;
+    list.themes.set(item.theme, (list.themes.get(item.theme) || 0) + 1);
+    if (!list.priority || priorityRank(item.v2?.priority) < priorityRank(list.priority.v2?.priority) || item.convictionScore > list.priority.convictionScore) {
+      list.priority = item;
+    }
+    lists.set(id, list);
+  }
+  return [...lists.values()].map((list) => ({
+    ...list,
+    averageConviction: list.count ? Math.round(list.convictionTotal / list.count) : 0,
+    themes: [...list.themes.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+      .slice(0, 5),
+    priority: list.priority ? {
+      ticker: list.priority.ticker,
+      status: list.priority.status,
+      theme: list.priority.theme,
+      convictionScore: list.priority.convictionScore,
+      reason: list.priority.reason,
+      v2: list.priority.v2
+    } : null,
+    convictionTotal: undefined
+  })).sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || a.name.localeCompare(b.name));
+}
+
+export function buildActiveRulesEngineV2({ dashboard, oldIntelligence }) {
+  const comparison = buildRulesEngineComparison({
+    ...dashboard,
+    intelligence: oldIntelligence
+  });
+  const evaluationByKey = new Map((comparison.evaluations || []).map((item) => [evaluationKey(item), item]));
+  const activate = (decision) => activateDecision(
+    decision,
+    evaluationByKey.get(evaluationKey(decision))
+      || evaluationByKey.get(`${decision.scope || ""}|${decision.ticker || ""}|`)
+  );
+  const portfolioDecisions = sortActiveDecisions((oldIntelligence.portfolioDecisions || []).map(activate));
+  const watchlistDecisions = sortActiveDecisions((oldIntelligence.watchlistDecisions || []).map(activate));
+  const decisions = sortActiveDecisions([...portfolioDecisions, ...watchlistDecisions]);
+  const intelligence = {
+    ...oldIntelligence,
+    mode: "rules-v2",
+    rulesVersion: RULES_ENGINE_V2_VERSION,
+    disclaimer: "Research support only. Rules V2 is active decision support, not personal financial advice.",
+    oldEngineSummary: oldIntelligence.summary,
+    summary: activeSummary(decisions, portfolioDecisions, watchlistDecisions),
+    decisions,
+    decisionQueue: decisions.slice(0, 18),
+    portfolioDecisions,
+    watchlistDecisions,
+    portfolioQueue: portfolioDecisions.slice(0, 18),
+    watchlistQueue: watchlistDecisions.slice(0, 18),
+    watchlistLists: activeWatchlistLists(watchlistDecisions),
+    themeExposure: summarizeBy(portfolioDecisions, "theme"),
+    watchlistThemeExposure: summarizeBy(watchlistDecisions, "theme"),
+    geographyExposure: summarizeBy(portfolioDecisions, "geography"),
+    watchlistGeographyExposure: summarizeBy(watchlistDecisions, "geography"),
+    risks: activeRisks(portfolioDecisions, oldIntelligence.risks || []),
+    capitalPlan: activeCapitalPlan(decisions, oldIntelligence.capitalPlan || {}, dashboard.user || {})
+  };
+  return { intelligence, comparison };
 }

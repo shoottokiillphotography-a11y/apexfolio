@@ -90,7 +90,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, "public");
 // Bump this on each backend release so /api/health and the startup log show which
 // code is actually running - the fastest way to confirm a server restart took.
-const APP_BUILD = "2026-06-26-transaction-wealth-modes";
+const APP_BUILD = "2026-06-26-rules-v2-active";
 let stopScheduler = null;
 
 async function setSchedulerEnabled(enabled) {
@@ -517,7 +517,7 @@ async function handleApi(req, res, url) {
       path: "/api/rules/v2/compare",
       handler: async () => {
         const dashboard = await calculatePortfolio(user.id, { refreshPrices: url.searchParams.get("refresh") === "true" });
-        return buildRulesEngineComparison(dashboard);
+        return dashboard.rulesV2Comparison || buildRulesEngineComparison(dashboard);
       }
     },
     {
