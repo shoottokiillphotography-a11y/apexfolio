@@ -10,7 +10,7 @@ function loadHoldingsView() {
 
 const savedHoldingsView = loadHoldingsView();
 const urlParams = new URLSearchParams(location.search);
-const ROUTED_VIEWS = new Set(["dashboard", "portfolio", "research", "alerts", "operations"]);
+const ROUTED_VIEWS = new Set(["dashboard", "portfolio", "research", "alerts", "rules-v2", "operations"]);
 
 function routeStateFromLocation() {
   const path = location.pathname.replace(/\/+$/, "") || "/";
@@ -221,7 +221,10 @@ const state = {
   marketPulseQuotesLoading: new Set(),
   marketPulseAutocompleteIndex: 0,
   alertCommandDrafts: [],
-  lastAlertCommandText: ""
+  lastAlertCommandText: "",
+  rulesV2: null,
+  rulesV2Loading: false,
+  rulesV2Error: ""
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -1012,7 +1015,7 @@ function toastError(error) {
 }
 
 function setView(view, { scroll = true, updateRoute = true, alertTab = "all", routeTab = "" } = {}) {
-  const nextView = ["dashboard", "portfolio", "research", "alerts", "operations", "stock"].includes(view) ? view : "dashboard";
+  const nextView = ["dashboard", "portfolio", "research", "alerts", "rules-v2", "operations", "stock"].includes(view) ? view : "dashboard";
   state.currentView = nextView;
   if (nextView === "alerts") state.alertTab = alertTab;
   state.routeTab = routeTab;
@@ -1037,6 +1040,9 @@ function setView(view, { scroll = true, updateRoute = true, alertTab = "all", ro
     } else {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
+  }
+  if (nextView === "rules-v2" && !state.rulesV2 && !state.rulesV2Loading) {
+    loadRulesV2().catch(toastError);
   }
 }
 
@@ -1940,6 +1946,134 @@ function renderDashboardIntelligence() {
       <div>${escapeHtml(data.cashPlan.reason)}</div>
     </div>
   `;
+}
+
+function ruleV2Pill(value, className = "neutral") {
+  return `<span class="status-pill ${escapeHtml(className || "neutral")}">${escapeHtml(value || "n/a")}</span>`;
+}
+
+function renderRulesV2Summary() {
+  const node = $("#rulesV2Summary");
+  if (!node) return;
+  const payload = state.rulesV2;
+  const summary = payload?.summary || {};
+  const baseCurrency = state.dashboard?.user?.baseCurrency || "AUD";
+  if (state.rulesV2Loading) {
+    node.innerHTML = `<div class="summary-card"><span>Loading</span><strong>Checking rules...</strong><small>Read-only comparison</small></div>`;
+    return;
+  }
+  if (!payload) {
+    node.innerHTML = `
+      <div class="summary-card">
+        <span>Rules V2</span>
+        <strong>Not loaded</strong>
+        <small>${escapeHtml(state.rulesV2Error || "Open or refresh the comparison.")}</small>
+      </div>
+    `;
+    return;
+  }
+  node.innerHTML = [
+    ["Monitored", summary.total || 0, `${summary.portfolio || 0} portfolio / ${summary.watchlist || 0} watchlist`],
+    ["Changed vs old", summary.changedCount || 0, "Where V2 disagrees with current engine"],
+    ["Blocked", summary.blockedCount || 0, "Hard rules block adding"],
+    ["Caution", summary.cautionCount || 0, "Needs review before action"],
+    ["Portfolio value", money(state.dashboard?.summary?.totalValueBase || 0, baseCurrency), "Current dashboard total"]
+  ].map(([label, value, detail]) => `
+    <div class="summary-card">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(String(value))}</strong>
+      <small>${escapeHtml(detail)}</small>
+    </div>
+  `).join("");
+}
+
+function renderRulesV2() {
+  const statusNode = $("#rulesV2Status");
+  const tableNode = $("#rulesV2Table");
+  if (!statusNode || !tableNode) return;
+  renderRulesV2Summary();
+  if (state.rulesV2Loading) {
+    statusNode.textContent = "Building the read-only comparison...";
+    tableNode.innerHTML = `<p class="muted">Checking portfolio, watchlists, valuation zones, sizing, group exposure, data quality, and liquidity.</p>`;
+    return;
+  }
+  if (!state.rulesV2) {
+    statusNode.textContent = state.rulesV2Error || "Read-only comparison. Existing dashboard rules remain active.";
+    tableNode.innerHTML = `<p class="muted">Open this page or press Refresh Comparison to load Rules V2.</p>`;
+    return;
+  }
+
+  const payload = state.rulesV2;
+  statusNode.textContent = `${payload.version} | ${payload.notice}`;
+  const rows = payload.evaluations || [];
+  tableNode.innerHTML = rows.length ? rows.map((item) => {
+    const price = item.context?.price == null
+      ? "n/a"
+      : money(item.context.price, item.context.currency || state.dashboard?.user?.baseCurrency || "USD");
+    const scoreLine = [
+      `Thesis ${item.scores?.thesisConviction ?? "n/a"}`,
+      `Value ${item.scores?.valuationOpportunity ?? "n/a"}`,
+      `Fit ${item.scores?.portfolioFit ?? "n/a"}`,
+      `Data ${item.scores?.dataConfidence ?? "n/a"}`
+    ].join(" / ");
+    return `
+      <div class="compact-row rules-v2-row">
+        <div>
+          ${tickerButton(item.ticker)}
+          <br><span class="muted">${escapeHtml(item.scope)} | ${escapeHtml(item.context?.groupName || item.context?.theme || "Unclassified")}</span>
+        </div>
+        <div>
+          <span class="muted">Old</span><br>
+          ${ruleV2Pill(item.oldAction, item.oldAction === item.finalAction ? "neutral" : "warning")}
+        </div>
+        <div>
+          <span class="muted">V2 final</span><br>
+          ${ruleV2Pill(item.finalAction, item.classes?.finalAction)}
+        </div>
+        <div>
+          <span class="muted">Underlying</span><br>
+          ${ruleV2Pill(item.underlyingSignal, item.classes?.valuation)}
+        </div>
+        <div>
+          <span class="muted">Eligibility</span><br>
+          ${ruleV2Pill(item.tradeEligibility, item.classes?.eligibility)}
+        </div>
+        <div>
+          <strong>${escapeHtml(item.primaryReasonCode || "NO_REASON")}</strong>
+          <br><span class="muted">${escapeHtml(item.explanation || "")}</span>
+          <br><span class="muted">${escapeHtml(price)} | ${escapeHtml(scoreLine)}</span>
+        </div>
+        <details class="rules-v2-details">
+          <summary>States</summary>
+          <div>
+            ${ruleV2Pill(item.dataState, item.classes?.data)}
+            ${ruleV2Pill(item.valuationState, item.classes?.valuation)}
+            ${ruleV2Pill(item.positionState, item.classes?.position)}
+            ${ruleV2Pill(item.groupState, item.classes?.group)}
+            ${ruleV2Pill(item.themeState, "neutral")}
+            ${ruleV2Pill(item.liquidityState, "neutral")}
+            ${ruleV2Pill(item.priority, item.classes?.priority)}
+          </div>
+        </details>
+      </div>
+    `;
+  }).join("") : `<p class="muted">No rules data found yet.</p>`;
+}
+
+async function loadRulesV2({ refresh = false } = {}) {
+  state.rulesV2Loading = true;
+  state.rulesV2Error = "";
+  renderRulesV2();
+  try {
+    state.rulesV2 = await api(`/api/rules/v2/compare${refresh ? "?refresh=true" : ""}`);
+  } catch (error) {
+    state.rulesV2 = null;
+    state.rulesV2Error = friendlyErrorMessage(error);
+    throw error;
+  } finally {
+    state.rulesV2Loading = false;
+    renderRulesV2();
+  }
 }
 
 function rulesEditorTemplate(rules) {
@@ -5785,6 +5919,7 @@ function render() {
   renderDividends();
   renderExternalTransactions();
   renderRealizedIncome();
+  renderRulesV2();
   renderEvents();
   renderNotifications();
   renderWarnings();
@@ -6485,6 +6620,11 @@ document.addEventListener("click", async (event) => {
           if (node) node.scrollIntoView({ behavior: "smooth", block: "start" });
         });
       }
+      return;
+    }
+    if (action === "refreshRulesV2") {
+      await loadRulesV2({ refresh: true });
+      toast("Rules V2 comparison refreshed");
       return;
     }
     if (target.dataset.alertTab) {

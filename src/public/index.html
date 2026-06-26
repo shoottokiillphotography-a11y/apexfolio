@@ -223,6 +223,7 @@
             <div class="button-row">
               <span class="status-pill" id="aiStatusBadge">Rules engine</span>
               <button class="button secondary" data-action="openRulesEditor" type="button">Edit Rules</button>
+              <button class="button secondary" data-view-jump="rules-v2" type="button">Rules V2 Compare</button>
               <button class="button secondary" data-view-jump="alerts" type="button">Open Alerts</button>
             </div>
           </div>
@@ -567,6 +568,34 @@
           <div class="section-title alerts-all-title">All alerts</div>
           <div id="alertTabs" class="alert-tabs" role="tablist" aria-label="Alert status filter"></div>
           <div id="alertsTable" class="compact-table"></div>
+        </section>
+      </section>
+
+      <section class="view-panel" data-view-panel="rules-v2">
+        <section class="band rules-v2-hero">
+          <div class="band-header">
+            <div>
+              <p class="eyebrow">Rules Engine V2</p>
+              <h2>Old vs New Decision Comparison</h2>
+              <p class="muted" id="rulesV2Status">Read-only comparison. Existing dashboard rules remain active.</p>
+            </div>
+            <div class="button-row">
+              <button class="button secondary" data-action="refreshRulesV2" type="button">Refresh Comparison</button>
+              <button class="button primary" data-view-jump="dashboard" type="button">Back to Dashboard</button>
+            </div>
+          </div>
+          <div id="rulesV2Summary" class="summary-grid compact-summary"></div>
+        </section>
+
+        <section class="band">
+          <div class="band-header">
+            <div>
+              <p class="eyebrow">Layered Decisions</p>
+              <h2>Portfolio and Watchlist Review</h2>
+              <p class="muted">This shows what V2 would say. It does not change alerts, lots, holdings, groups, or cash.</p>
+            </div>
+          </div>
+          <div id="rulesV2Table" class="rules-v2-table compact-table"></div>
         </section>
       </section>
 

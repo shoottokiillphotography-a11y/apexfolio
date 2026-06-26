@@ -408,6 +408,84 @@ function migrate(database) {
 
     CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_user_date
       ON portfolio_snapshots(user_id, snapshot_date);
+
+    CREATE TABLE IF NOT EXISTS rules_versions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      version TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      activated_at TEXT,
+      retired_at TEXT,
+      UNIQUE(user_id, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS rules_settings_v2 (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      version TEXT NOT NULL,
+      settings_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS security_classifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      ticker TEXT NOT NULL REFERENCES equities(ticker),
+      classification_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, ticker)
+    );
+
+    CREATE TABLE IF NOT EXISTS valuation_anchors (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      ticker TEXT NOT NULL REFERENCES equities(ticker),
+      anchor_type TEXT NOT NULL,
+      anchor_value REAL,
+      currency TEXT,
+      source TEXT,
+      notes TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS rule_evaluations (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      ticker TEXT NOT NULL REFERENCES equities(ticker),
+      scope TEXT NOT NULL,
+      rules_version TEXT NOT NULL,
+      evaluation_json TEXT NOT NULL,
+      evaluated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rule_evaluations_user_time
+      ON rule_evaluations(user_id, evaluated_at);
+
+    CREATE TABLE IF NOT EXISTS rule_overrides (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      ticker TEXT REFERENCES equities(ticker),
+      scope TEXT,
+      override_type TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      payload_json TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      expires_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS alert_lifecycle_events (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      alert_id TEXT NOT NULL REFERENCES price_alerts(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL,
+      payload_json TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
 
   ensureColumn(database, "users", "display_name", "TEXT");

@@ -3013,6 +3013,40 @@ th {
   background: var(--card-elevated);
 }
 
+.rules-v2-hero {
+  border-color: rgba(203, 174, 112, 0.32);
+}
+
+.rules-v2-table {
+  gap: 0;
+}
+
+.rules-v2-row {
+  grid-template-columns:
+    minmax(130px, 0.8fr)
+    minmax(70px, 0.42fr)
+    minmax(82px, 0.48fr)
+    minmax(90px, 0.55fr)
+    minmax(95px, 0.58fr)
+    minmax(240px, 1.45fr)
+    minmax(90px, 0.45fr);
+  align-items: start;
+  padding: 14px 0;
+}
+
+.rules-v2-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.rules-v2-details div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 .compact-row.wide {
   grid-template-columns: minmax(90px, 0.7fr) minmax(170px, 1.4fr) minmax(80px, 0.7fr) minmax(90px, 0.8fr);
 }

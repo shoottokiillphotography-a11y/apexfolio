@@ -47,6 +47,7 @@ import { syncDividends } from "./services/dividends.js";
 import { createWatchlist, renameWatchlist } from "./services/watchlists.js";
 import { aiSettingsForUser, generateResearchMemo, saveAiSettings } from "./services/intelligence.js";
 import { getRules, saveRules, resetRules, DEFAULT_RULES } from "./services/rules.js";
+import { buildRulesEngineComparison } from "./services/rules-engine-v2.js";
 import { refreshTrackedFundamentals } from "./services/fundamentals.js";
 import { portfolioPerformance, stockDetail, tickerPerformance } from "./services/performance.js";
 import { seedStrategyAlerts } from "./services/strategy-alerts.js";
@@ -510,6 +511,14 @@ async function handleApi(req, res, url) {
       method: "GET",
       path: "/api/rules",
       handler: async () => ({ rules: getRules(user.id), defaults: DEFAULT_RULES })
+    },
+    {
+      method: "GET",
+      path: "/api/rules/v2/compare",
+      handler: async () => {
+        const dashboard = await calculatePortfolio(user.id, { refreshPrices: url.searchParams.get("refresh") === "true" });
+        return buildRulesEngineComparison(dashboard);
+      }
     },
     {
       method: "PUT",
