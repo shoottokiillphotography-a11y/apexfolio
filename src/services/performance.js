@@ -404,14 +404,14 @@ function quantityHeldAtDate(lot, salesByLot, pointDate, currentOnly = false) {
   return Math.max(0, quantity);
 }
 
-function priceAtOrBefore(history, pointDate, fallback = null) {
+function priceAtOrBefore(history, pointDate) {
   if (!history?.points?.length) return null;
   let latest = null;
   for (const point of history.points) {
     if (point.date <= pointDate) latest = point;
     else break;
   }
-  return latest?.value ?? (history.points[0]?.date >= pointDate ? history.points[0]?.value : null) ?? fallback;
+  return latest?.value ?? null;
 }
 
 async function cashValueBase(database, userId, baseCurrency, fxCache) {
@@ -426,20 +426,28 @@ async function cashValueBase(database, userId, baseCurrency, fxCache) {
 
 function buildAnchorDates(histories, startDate, endDate, maxPoints) {
   const dates = new Set([startDate, endDate]);
+  const start = dateAtUtc(startDate);
+  const end = dateAtUtc(endDate);
+  const totalDays = Math.max(1, Math.round((end - start) / 86_400_000));
+  if (totalDays + 1 <= maxPoints) {
+    for (let offset = 0; offset <= totalDays; offset += 1) dates.add(addDays(startDate, offset));
+    return [...dates].sort();
+  }
   for (const history of histories.values()) {
     for (const point of history.points || []) {
       if (point.date >= startDate && point.date <= endDate) dates.add(point.date);
     }
   }
   if (dates.size < 3) {
-    const start = dateAtUtc(startDate);
-    const end = dateAtUtc(endDate);
-    const totalDays = Math.max(1, Math.round((end - start) / 86_400_000));
     const step = totalDays > 900 ? 7 : 1;
     for (let offset = 0; offset <= totalDays; offset += step) dates.add(addDays(startDate, offset));
   }
   return thinPoints([...dates].sort().map((date) => ({ date, time: `${date}T00:00:00.000Z` })), maxPoints)
     .map((point) => point.date);
+}
+
+function daysBetween(startDate, endDate) {
+  return Math.max(0, Math.round((dateAtUtc(endDate) - dateAtUtc(startDate)) / 86_400_000));
 }
 
 async function baseCostForLot(lot, quantity, baseCurrency, fxCache) {
@@ -463,6 +471,181 @@ async function realizedMath(row, baseCurrency, fxCache) {
 async function dividendBase(row, baseCurrency, fxCache) {
   const rate = await rateFor(row.currency, baseCurrency, fxCache);
   return (Number(row.grossAmount) || 0) * rate;
+}
+
+async function externalCashEvents(database, userId, baseCurrency) {
+  const rows = database.prepare(`
+    SELECT id, event_type AS eventType, event_date AS eventDate, source_description AS sourceDescription,
+      net_amount AS netAmount, converted_amount_base AS convertedAmountBase, currency, add_to_cash AS addToCash
+    FROM external_income_events
+    WHERE user_id = ? AND add_to_cash = 1
+    ORDER BY event_date, created_at
+  `).all(userId);
+  const events = [];
+  for (const row of rows) {
+    const stored = Number(row.convertedAmountBase);
+    const amountBase = Number.isFinite(stored)
+      ? stored
+      : (await convertAmount(row.netAmount, row.currency, baseCurrency).catch(() => null))?.amount;
+    if (!Number.isFinite(Number(amountBase))) continue;
+    const isExpense = row.eventType === "EXPENSE" || Number(row.netAmount) < 0;
+    events.push({
+      id: row.id,
+      date: toDateOnly(row.eventDate),
+      type: isExpense ? "withdrawal" : "deposit",
+      source: row.sourceDescription || (isExpense ? "External expense" : "External income"),
+      amountBase: roundMoney(isExpense ? -Math.abs(amountBase) : Math.abs(amountBase)),
+      externalFlow: true,
+      estimated: false
+    });
+  }
+  return events.filter((event) => event.date);
+}
+
+function cashAtDate(events, date) {
+  return events
+    .filter((event) => event.date <= date)
+    .reduce((total, event) => total + Number(event.amountBase || 0), 0);
+}
+
+function externalFlowOnDate(events, date) {
+  return events
+    .filter((event) => event.date === date && event.externalFlow)
+    .reduce((total, event) => total + Number(event.amountBase || 0), 0);
+}
+
+async function buildCashEvents({
+  database,
+  userId,
+  lots,
+  realizedRows,
+  dividendRows,
+  currentCashBase,
+  firstHoldingDate,
+  baseCurrency,
+  fxCache
+}) {
+  const today = isoDate(new Date());
+  const events = [];
+  for (const lot of lots) {
+    const costBase = await baseCostForLot(lot, lot.original_quantity, baseCurrency, fxCache);
+    if (!lot.purchase_date || !Number.isFinite(costBase)) continue;
+    events.push({
+      id: `buy_${lot.id}`,
+      date: toDateOnly(lot.purchase_date),
+      type: "buy",
+      ticker: lot.ticker,
+      source: lot.ticker,
+      amountBase: -roundMoney(costBase),
+      externalFlow: false
+    });
+  }
+  for (const row of realizedRows) {
+    const math = await realizedMath(row, baseCurrency, fxCache);
+    if (!row.soldAt || !Number.isFinite(math.proceedsBase)) continue;
+    events.push({
+      id: `sale_${row.id || row.lotId || `${row.ticker}_${row.soldAt}`}`,
+      date: toDateOnly(row.soldAt),
+      type: "sale",
+      ticker: row.ticker,
+      source: row.ticker,
+      amountBase: roundMoney(math.proceedsBase),
+      realizedGainBase: roundMoney(math.gainLossBase),
+      externalFlow: false
+    });
+  }
+  for (const row of dividendRows) {
+    const date = toDateOnly(row.payDate || row.exDate);
+    const amountBase = await dividendBase(row, baseCurrency, fxCache);
+    if (!date || !Number.isFinite(amountBase)) continue;
+    events.push({
+      id: `dividend_${row.id || `${row.ticker}_${date}`}`,
+      date,
+      type: "dividend",
+      ticker: row.ticker,
+      source: row.ticker,
+      amountBase: roundMoney(amountBase),
+      externalFlow: false
+    });
+  }
+  events.push(...await externalCashEvents(database, userId, baseCurrency));
+
+  const currentEventTotal = events
+    .filter((event) => event.date <= today)
+    .reduce((total, event) => total + Number(event.amountBase || 0), 0);
+  const openingAmount = roundMoney(currentCashBase - currentEventTotal);
+  const openingDate = firstHoldingDate || today;
+  events.unshift({
+    id: "cash_opening_reconciliation",
+    date: openingDate,
+    type: "opening_cash",
+    source: "Opening / reconciled cash balance",
+    amountBase: openingAmount,
+    externalFlow: false,
+    estimated: true
+  });
+  return events
+    .filter((event) => event.date && Number.isFinite(Number(event.amountBase)))
+    .sort((a, b) => `${a.date}|${a.type}|${a.id}`.localeCompare(`${b.date}|${b.type}|${b.id}`));
+}
+
+function syntheticLotFromSale(row, index) {
+  if (row.lotId || !row.manualBoughtAt || !row.manualBuyPrice || !row.quantity) return null;
+  return {
+    id: `external_${row.id || index}`,
+    ticker: row.ticker,
+    original_quantity: Number(row.quantity) || 0,
+    quantity: 0,
+    purchase_price: Number(row.manualBuyPrice) || 0,
+    purchase_currency: row.manualBuyCurrency || row.saleCurrency,
+    purchase_date: toDateOnly(row.manualBoughtAt),
+    synthetic: true
+  };
+}
+
+function appendLiveQuote(history, quote, endDate) {
+  const price = Number(quote?.price);
+  if (!Number.isFinite(price) || price <= 0) return history;
+  const points = [...(history.points || [])].filter((point) => point.date !== endDate);
+  points.push({ date: endDate, time: `${endDate}T23:59:59.000Z`, value: price });
+  points.sort((a, b) => a.date.localeCompare(b.date));
+  return {
+    ...history,
+    currency: history.currency || quote.currency,
+    provider: `${history.provider || "historical prices"} + live quote`,
+    points
+  };
+}
+
+function applyUnitizedReturns(points) {
+  if (!points.length) return points;
+  const firstValue = Number(points[0].rawValue) || 0;
+  let cumulativeReturn = 0;
+  let previousValue = firstValue;
+  return points.map((point, index) => {
+    if (index === 0 || previousValue <= 0) {
+      previousValue = Number(point.rawValue) || previousValue;
+      return {
+        ...point,
+        adjustedValue: roundMoney(firstValue),
+        returnPercent: 0,
+        periodReturnPercent: 0
+      };
+    }
+    const externalFlow = Number(point.externalCashFlowBase) || 0;
+    const endValue = Number(point.rawValue) || previousValue;
+    const periodReturn = (endValue - externalFlow - previousValue) / previousValue;
+    if (Number.isFinite(periodReturn)) {
+      cumulativeReturn = ((1 + cumulativeReturn) * (1 + periodReturn)) - 1;
+    }
+    previousValue = endValue;
+    return {
+      ...point,
+      adjustedValue: roundMoney(firstValue * (1 + cumulativeReturn)),
+      returnPercent: roundPercent(cumulativeReturn * 100),
+      periodReturnPercent: Number.isFinite(periodReturn) ? roundPercent(periodReturn * 100) : null
+    };
+  });
 }
 
 async function oneDayPortfolioPerformance(lots, baseCurrency, cashBase, fxCache) {
@@ -542,24 +725,16 @@ export async function portfolioPerformance(userId, rangeInput = "1y") {
   const database = getDb();
   const user = database.prepare("SELECT * FROM users WHERE id = ?").get(userId);
   const baseCurrency = user.base_currency;
-  const allLots = database.prepare(`
+  const allLotsRaw = database.prepare(`
     SELECT id, ticker, original_quantity, quantity, purchase_price, purchase_currency, purchase_date
     FROM holding_lots
     WHERE user_id = ? AND original_quantity > 0
     ORDER BY ticker, purchase_date
   `).all(userId);
-  if (!allLots.length) {
-    return { range, currency: baseCurrency, points: [], ...performanceSummary([]), warnings: ["No lots found"] };
-  }
-  const currentOnly = range !== "all";
-  const lots = currentOnly ? allLots.filter((lot) => Number(lot.quantity) > 0) : allLots;
-  if (!lots.length) {
-    return { range, currency: baseCurrency, points: [], ...performanceSummary([]), warnings: ["No open holdings found"] };
-  }
 
   const salesByLot = new Map();
   const realizedSourceRows = database.prepare(`
-    SELECT r.ticker, r.quantity, r.sale_price AS salePrice, r.sale_currency AS saleCurrency,
+    SELECT r.id, r.source, r.ticker, r.quantity, r.sale_price AS salePrice, r.sale_currency AS saleCurrency,
       r.sold_at AS soldAt, r.cost_basis_base AS storedCostBasisBase,
       r.proceeds_base AS storedProceedsBase, r.gain_loss_base AS storedGainLossBase,
       r.buy_price AS manualBuyPrice, r.buy_currency AS manualBuyCurrency,
@@ -571,14 +746,27 @@ export async function portfolioPerformance(userId, rangeInput = "1y") {
     WHERE r.user_id = ?
     ORDER BY r.sold_at
   `).all(userId);
+
+  const syntheticLots = realizedSourceRows
+    .map((row, index) => syntheticLotFromSale(row, index))
+    .filter(Boolean);
+  syntheticLots.forEach((lot) => {
+    const sourceSale = realizedSourceRows.find((row) => `external_${row.id}` === lot.id);
+    if (sourceSale) sourceSale.syntheticLotId = lot.id;
+  });
+  const lots = [...allLotsRaw, ...syntheticLots];
+  if (!lots.length) {
+    return { range, currency: baseCurrency, points: [], ...performanceSummary([]), warnings: ["No lots or closed transactions found"] };
+  }
   realizedSourceRows.forEach((sale) => {
-    if (!sale.lotId) return;
-    if (!salesByLot.has(sale.lotId)) salesByLot.set(sale.lotId, []);
-    salesByLot.get(sale.lotId).push({ quantity: sale.quantity, sold_at: sale.soldAt });
+    const saleLotId = sale.lotId || sale.syntheticLotId;
+    if (!saleLotId) return;
+    if (!salesByLot.has(saleLotId)) salesByLot.set(saleLotId, []);
+    salesByLot.get(saleLotId).push({ quantity: sale.quantity, sold_at: sale.soldAt });
   });
 
   const dividendRows = database.prepare(`
-    SELECT ticker, pay_date AS payDate, ex_date AS exDate, gross_amount AS grossAmount,
+    SELECT id, ticker, pay_date AS payDate, ex_date AS exDate, gross_amount AS grossAmount,
       gross_amount_base AS storedGrossAmountBase, currency
     FROM dividend_payments
     WHERE user_id = ?
@@ -586,7 +774,7 @@ export async function portfolioPerformance(userId, rangeInput = "1y") {
   `).all(userId);
 
   const firstHoldingDate = [
-    ...allLots.map((lot) => toDateOnly(lot.purchase_date)),
+    ...lots.map((lot) => toDateOnly(lot.purchase_date)),
     ...realizedSourceRows.map((row) => toDateOnly(row.manualBoughtAt || row.lotPurchaseDate))
   ].filter(Boolean).sort()[0];
   const startDate = startDateForRange(range, firstHoldingDate);
@@ -594,8 +782,19 @@ export async function portfolioPerformance(userId, rangeInput = "1y") {
   const fxCache = new Map();
   const cashBase = await cashValueBase(database, userId, baseCurrency, fxCache);
   if (range === "1d") {
-    return oneDayPortfolioPerformance(lots, baseCurrency, cashBase, fxCache);
+    return oneDayPortfolioPerformance(allLotsRaw.filter((lot) => Number(lot.quantity) > 0), baseCurrency, cashBase, fxCache);
   }
+  const cashEvents = await buildCashEvents({
+    database,
+    userId,
+    lots,
+    realizedRows: realizedSourceRows,
+    dividendRows,
+    currentCashBase: cashBase,
+    firstHoldingDate,
+    baseCurrency,
+    fxCache
+  });
 
   const tickers = [...new Set(lots.map((lot) => lot.ticker))];
   const currentQuotes = new Map();
@@ -613,7 +812,7 @@ export async function portfolioPerformance(userId, rangeInput = "1y") {
           fromDate: startDate,
           toDate: endDate,
           currency: currentQuotes.get(ticker)?.currency || equityCurrency,
-          lots: allLots,
+          lots,
           realizedRows: realizedSourceRows,
           currentQuote: currentQuotes.get(ticker)
         })
@@ -628,59 +827,27 @@ export async function portfolioPerformance(userId, rangeInput = "1y") {
         warnings.push(`${result.ticker}: broker transaction fallback skipped for portfolio chart; real historical prices are required`);
         continue;
       }
-      histories.set(result.ticker, result.history);
+      histories.set(result.ticker, appendLiveQuote(result.history, currentQuotes.get(result.ticker), endDate));
     }
     else if (result?.warning) warnings.push(result.warning);
   }
   if (!histories.size) {
     warnings.unshift("No reliable historical market prices are loaded for this range. Broker transaction fallback was disabled because it can overstate portfolio value.");
-    return {
-      range,
-      label: PERFORMANCE_RANGES[range].label,
-      currency: baseCurrency,
-      provider: "historical prices required",
-      points: [],
-      ...performanceSummary([]),
-      performanceReliable: false,
-      baselineDate: startDate,
-      includesRealized: !currentOnly,
-      cashFlowDiagnostics: {
-        currentOnly,
-        cashIncludedBase: roundMoney(cashBase),
-        realizedRowsIncluded: currentOnly ? 0 : realizedSourceRows.length,
-        dividendRowsIncluded: currentOnly ? 0 : dividendRows.length
-      },
-      warnings: [...new Set(warnings)].slice(0, 20)
-    };
-  }
-
-  const anchorDates = buildAnchorDates(histories, startDate, endDate, PERFORMANCE_RANGES[range].maxPoints);
-  const realizedCache = new Map();
-  const dividendCache = new Map();
-  const points = [];
-
-  for (const date of anchorDates) {
-    let activeValueBase = cashBase;
-    let activeCostBase = 0;
-    let realizedGainBase = 0;
-    let realizedCostBasisBase = 0;
-    let dividendIncomeBase = 0;
-
-    for (const lot of lots) {
-      const quantity = quantityHeldAtDate(lot, salesByLot, date, currentOnly);
-      if (quantity <= 0) continue;
-      const history = histories.get(lot.ticker);
-      const price = priceAtOrBefore(history, date, Number(lot.purchase_price) || null);
-      if (price == null) {
-        warnings.push(`${lot.ticker}: missing price around ${date}`);
-        continue;
+    warnings.unshift("Showing transaction-based book value instead. This is not historical market value.");
+    const fallbackDates = buildAnchorDates(new Map(), startDate, endDate, PERFORMANCE_RANGES[range].maxPoints);
+    const fallbackPoints = [];
+    const realizedCache = new Map();
+    const dividendCache = new Map();
+    for (const date of fallbackDates) {
+      let remainingCostBasisBase = 0;
+      let realizedGainBase = 0;
+      let realizedCostBasisBase = 0;
+      let dividendIncomeBase = 0;
+      for (const lot of lots) {
+        const quantity = quantityHeldAtDate(lot, salesByLot, date, false);
+        if (quantity <= 0) continue;
+        remainingCostBasisBase += await baseCostForLot(lot, quantity, baseCurrency, fxCache);
       }
-      const rate = await rateFor(history?.currency || lot.purchase_currency, baseCurrency, fxCache);
-      activeValueBase += price * quantity * rate;
-      activeCostBase += await baseCostForLot(lot, quantity, baseCurrency, fxCache);
-    }
-
-    if (!currentOnly) {
       for (const row of realizedSourceRows) {
         if (toDateOnly(row.soldAt) > date) continue;
         if (!realizedCache.has(row)) realizedCache.set(row, await realizedMath(row, baseCurrency, fxCache));
@@ -694,59 +861,201 @@ export async function portfolioPerformance(userId, rangeInput = "1y") {
         if (!dividendCache.has(row)) dividendCache.set(row, await dividendBase(row, baseCurrency, fxCache));
         dividendIncomeBase += dividendCache.get(row);
       }
+      const cashValue = cashAtDate(cashEvents, date);
+      const rawValue = remainingCostBasisBase + cashValue;
+      fallbackPoints.push({
+        date,
+        time: `${date}T00:00:00.000Z`,
+        value: roundMoney(rawValue),
+        rawValue: roundMoney(rawValue),
+        adjustedValue: roundMoney(rawValue),
+        holdingsMarketValueBase: null,
+        remainingCostBasisBase: roundMoney(remainingCostBasisBase),
+        cashValueBase: roundMoney(cashValue),
+        externalCashFlowBase: roundMoney(externalFlowOnDate(cashEvents, date)),
+        investedCapital: roundMoney(remainingCostBasisBase + realizedCostBasisBase),
+        realizedValue: roundMoney(realizedGainBase),
+        dividendValue: roundMoney(dividendIncomeBase),
+        unrealizedValue: null,
+        dataCoveragePercent: 0,
+        dataQualityStatus: "book_value_fallback",
+        returnPercent: null
+      });
+    }
+    const finalFallbackPoints = applyUnitizedReturns(fallbackPoints);
+    const raw = performanceSummary(finalFallbackPoints, "rawValue");
+    const adjusted = performanceSummary(finalFallbackPoints, "adjustedValue");
+    return {
+      range,
+      label: PERFORMANCE_RANGES[range].label,
+      currency: baseCurrency,
+      provider: "transaction book value fallback",
+      points: finalFallbackPoints,
+      ...raw,
+      startAdjustedValue: adjusted.startValue,
+      endAdjustedValue: adjusted.endValue,
+      adjustedChangeValue: adjusted.changeValue,
+      adjustedChangePercent: adjusted.changePercent,
+      performanceReliable: false,
+      baselineDate: startDate,
+      includesRealized: true,
+      chartModes: {
+        withCash: "Book Value fallback: open cost basis plus transaction-aware cash",
+        withoutCash: "Unitized book-value change; deposits and withdrawals neutralized"
+      },
+      cashFlowDiagnostics: {
+        cashIncludedBase: roundMoney(cashBase),
+        currentCashBase: roundMoney(cashBase),
+        openingCashReconciliationBase: roundMoney(cashEvents.find((event) => event.id === "cash_opening_reconciliation")?.amountBase || 0),
+        reconstructedCashTodayBase: roundMoney(cashAtDate(cashEvents, endDate)),
+        realizedRowsIncluded: realizedSourceRows.length,
+        dividendRowsIncluded: dividendRows.length,
+        saleProceedsIncludedBase: roundMoney(cashEvents.filter((event) => event.type === "sale").reduce((total, event) => total + Number(event.amountBase || 0), 0)),
+        externalCashFlowBase: roundMoney(cashEvents.filter((event) => event.externalFlow).reduce((total, event) => total + Number(event.amountBase || 0), 0))
+      },
+      dataQuality: {
+        startDate,
+        endDate,
+        expectedPointCount: Math.min(daysBetween(startDate, endDate) + 1, PERFORMANCE_RANGES[range].maxPoints),
+        pointCount: finalFallbackPoints.length,
+        averageCoveragePercent: 0,
+        missingTickers: tickers.sort(),
+        cashReconciled: Math.abs(roundMoney(cashAtDate(cashEvents, endDate) - cashBase)) < 0.01,
+        noSyntheticBrokerPrices: true,
+        fallback: "book_value"
+      },
+      warnings: [...new Set(warnings)].slice(0, 20)
+    };
+  }
+
+  const anchorDates = buildAnchorDates(histories, startDate, endDate, PERFORMANCE_RANGES[range].maxPoints);
+  const realizedCache = new Map();
+  const dividendCache = new Map();
+  const points = [];
+  const missingTickers = new Set();
+  let coverageTotal = 0;
+  let coverageValued = 0;
+
+  for (const date of anchorDates) {
+    let holdingsMarketValueBase = 0;
+    let activeCostBase = 0;
+    let realizedGainBase = 0;
+    let realizedCostBasisBase = 0;
+    let dividendIncomeBase = 0;
+    let holdingsRequired = 0;
+    let holdingsValued = 0;
+
+    for (const lot of lots) {
+      const quantity = quantityHeldAtDate(lot, salesByLot, date, false);
+      if (quantity <= 0) continue;
+      holdingsRequired += 1;
+      const history = histories.get(lot.ticker);
+      const price = priceAtOrBefore(history, date);
+      if (price == null) {
+        warnings.push(`${lot.ticker}: missing price around ${date}`);
+        missingTickers.add(lot.ticker);
+        continue;
+      }
+      const rate = await rateFor(history?.currency || lot.purchase_currency, baseCurrency, fxCache);
+      holdingsMarketValueBase += price * quantity * rate;
+      activeCostBase += await baseCostForLot(lot, quantity, baseCurrency, fxCache);
+      holdingsValued += 1;
+    }
+    coverageTotal += holdingsRequired;
+    coverageValued += holdingsValued;
+
+    for (const row of realizedSourceRows) {
+      if (toDateOnly(row.soldAt) > date) continue;
+      if (!realizedCache.has(row)) realizedCache.set(row, await realizedMath(row, baseCurrency, fxCache));
+      const item = realizedCache.get(row);
+      realizedGainBase += item.gainLossBase;
+      realizedCostBasisBase += item.costBasisBase;
+    }
+    for (const row of dividendRows) {
+      const eventDate = toDateOnly(row.payDate || row.exDate);
+      if (!eventDate || eventDate > date) continue;
+      if (!dividendCache.has(row)) dividendCache.set(row, await dividendBase(row, baseCurrency, fxCache));
+      dividendIncomeBase += dividendCache.get(row);
     }
 
-    const adjustedValue = activeValueBase - cashBase - activeCostBase + realizedGainBase + dividendIncomeBase;
-    const rawValue = activeValueBase + (currentOnly ? 0 : realizedGainBase + dividendIncomeBase);
+    const cashValueBase = cashAtDate(cashEvents, date);
+    const rawValue = holdingsMarketValueBase + cashValueBase;
     const investedCapital = activeCostBase + realizedCostBasisBase;
     points.push({
       date,
       time: `${date}T00:00:00.000Z`,
       value: roundMoney(rawValue),
       rawValue: roundMoney(rawValue),
-      adjustedValue: roundMoney(adjustedValue),
+      adjustedValue: roundMoney(rawValue),
+      holdingsMarketValueBase: roundMoney(holdingsMarketValueBase),
+      cashValueBase: roundMoney(cashValueBase),
+      externalCashFlowBase: roundMoney(externalFlowOnDate(cashEvents, date)),
       investedCapital: roundMoney(investedCapital),
       realizedValue: roundMoney(realizedGainBase),
       dividendValue: roundMoney(dividendIncomeBase),
-      returnPercent: investedCapital ? roundPercent((adjustedValue / investedCapital) * 100) : null
+      unrealizedValue: roundMoney(holdingsMarketValueBase - activeCostBase),
+      dataCoveragePercent: holdingsRequired ? roundPercent((holdingsValued / holdingsRequired) * 100) : 100,
+      dataQualityStatus: holdingsRequired === holdingsValued ? "complete" : holdingsValued ? "partial" : "missing",
+      returnPercent: null
     });
   }
 
-  if (range === "all" && points.length) {
-    points[0].adjustedValue = 0;
-    points[0].realizedValue = 0;
-    points[0].dividendValue = 0;
-    points[0].returnPercent = 0;
+  const finalPoints = applyUnitizedReturns(points);
+  const averageCoverage = coverageTotal ? roundPercent((coverageValued / coverageTotal) * 100) : 100;
+  const expectedPointCount = Math.min(daysBetween(startDate, endDate) + 1, PERFORMANCE_RANGES[range].maxPoints);
+  if (range === "1mo" && finalPoints.length < Math.max(2, expectedPointCount - 3)) {
+    warnings.unshift(`Insufficient historical daily points for 1M chart - expected about ${expectedPointCount}, got ${finalPoints.length}.`);
+  }
+  if (averageCoverage < 95) {
+    warnings.unshift(`Historical price coverage is partial (${averageCoverage}%). Missing tickers: ${[...missingTickers].slice(0, 8).join(", ") || "unknown"}.`);
   }
 
-  const raw = performanceSummary(points, "rawValue");
-  const adjusted = performanceSummary(points, "adjustedValue");
+  const raw = performanceSummary(finalPoints, "rawValue");
+  const adjusted = performanceSummary(finalPoints, "adjustedValue");
+  if (range === "1mo" && raw.changePercent != null && Math.abs(raw.changePercent) > 20) {
+    warnings.unshift("Large performance move detected - verify cash flows, sales, FX, and historical price coverage before trusting this 1M result.");
+  }
+  if (range === "1d" && raw.changePercent != null && Math.abs(raw.changePercent) > 10) {
+    warnings.unshift("Large 1D performance move detected - verify quote coverage and cash reconciliation.");
+  }
   const providers = [...new Set([...histories.values()].map((history) => history.provider))].slice(0, 4).join(" + ");
   return {
     range,
     label: PERFORMANCE_RANGES[range].label,
     currency: baseCurrency,
     provider: providers || "cached historical prices",
-    points,
+    points: finalPoints,
     ...raw,
     startAdjustedValue: adjusted.startValue,
     endAdjustedValue: adjusted.endValue,
     adjustedChangeValue: adjusted.changeValue,
     adjustedChangePercent: adjusted.changePercent,
-    performanceReliable: true,
+    performanceReliable: averageCoverage >= 95 && !warnings.some((warning) => /Large performance move|Insufficient historical daily points/i.test(warning)),
     baselineDate: startDate,
-    includesRealized: !currentOnly,
+    includesRealized: true,
     chartModes: {
-      withCash: "Raw portfolio value including capital additions",
-      withoutCash: currentOnly
-        ? "Open-holding investment P&L excluding added capital"
-        : "Total cumulative P&L including realized gains and dividends"
+      withCash: "Total Portfolio Value: holdings plus transaction-aware cash",
+      withoutCash: "Investment Performance: unitized return, neutralizing external deposits and withdrawals"
     },
     cashFlowDiagnostics: {
-      currentOnly,
+      currentCashBase: roundMoney(cashBase),
       cashIncludedBase: roundMoney(cashBase),
-      realizedRowsIncluded: currentOnly ? 0 : realizedSourceRows.length,
-      dividendRowsIncluded: currentOnly ? 0 : dividendRows.length
+      openingCashReconciliationBase: roundMoney(cashEvents.find((event) => event.id === "cash_opening_reconciliation")?.amountBase || 0),
+      reconstructedCashTodayBase: roundMoney(cashAtDate(cashEvents, endDate)),
+      realizedRowsIncluded: realizedSourceRows.length,
+      dividendRowsIncluded: dividendRows.length,
+      saleProceedsIncludedBase: roundMoney(cashEvents.filter((event) => event.type === "sale").reduce((total, event) => total + Number(event.amountBase || 0), 0)),
+      externalCashFlowBase: roundMoney(cashEvents.filter((event) => event.externalFlow).reduce((total, event) => total + Number(event.amountBase || 0), 0))
+    },
+    dataQuality: {
+      startDate,
+      endDate,
+      expectedPointCount,
+      pointCount: finalPoints.length,
+      averageCoveragePercent: averageCoverage,
+      missingTickers: [...missingTickers].sort(),
+      cashReconciled: Math.abs(roundMoney(cashAtDate(cashEvents, endDate) - cashBase)) < 0.01,
+      noSyntheticBrokerPrices: true
     },
     warnings: [...new Set(warnings)].slice(0, 20)
   };

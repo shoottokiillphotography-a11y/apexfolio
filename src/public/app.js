@@ -156,7 +156,7 @@ const cachedDashboardSnapshot = loadCachedDashboardSnapshot();
 const savedPerformanceMode = localStorage.getItem("portfolioPerformanceMode");
 const initialPerformanceMode = ["withCash", "withoutCash"].includes(savedPerformanceMode)
   ? savedPerformanceMode
-  : "withCash";
+  : "withoutCash";
 const savedRealizedIncomeMode = localStorage.getItem("realizedIncomeMode");
 const realizedIncomeModeAliases = {
   investment_growth: "book_value",
@@ -812,7 +812,7 @@ function attachChartHover(svg, points, dims, xAt, yAt, performance, mode) {
     dot.setAttribute("cx", x.toFixed(1));
     dot.setAttribute("cy", y.toFixed(1));
     tipDate.textContent = point.date;
-    tipVal.textContent = `${mode === "withoutCash" ? "Pure P&L" : "Portfolio"}: ${fmtVal(point.value)}`;
+    tipVal.textContent = `${mode === "withoutCash" ? "Investment" : "Portfolio"}: ${fmtVal(point.value)}`;
     tipSub.textContent = `Raw value: ${fmtVal(point.rawValue ?? point.value)}`;
     const returnText = point.returnPercent == null ? "n/a" : `${number(point.returnPercent, 2)}%`;
     tipSub2.textContent = `Return: ${returnText}`;
@@ -846,16 +846,19 @@ function performanceStatsHtml(performance, options = {}) {
   const last = plotted[plotted.length - 1] || {};
   const changeValue = last.value != null && first.value != null ? roundCurrency(last.value - first.value) : null;
   const changePercent = first.value ? roundDisplayPercent((changeValue / first.value) * 100) : null;
-  const latestLabel = mode === "withoutCash" ? "Pure P&L" : "Latest Value";
-  const changeLabel = mode === "withoutCash" ? "P&L Change" : `${performance.label || performance.range || "Range"} Change`;
+  const latestLabel = mode === "withoutCash" ? "Investment Value" : "Latest Value";
+  const changeLabel = mode === "withoutCash" ? "Investment Return" : `${performance.label || performance.range || "Range"} Change`;
   const changeClass = valueClass(changeValue || 0);
   const updatedAt = last.date || "latest";
   const returnText = mode === "withoutCash"
     ? (last.returnPercent == null ? "--" : `${number(last.returnPercent, 2)}%`)
     : signedPercent(changePercent);
   const providerNote = mode === "withoutCash"
-    ? (performance.includesRealized ? "cash-adjusted P&L incl. realized + dividends" : "cash-adjusted P&L on current holdings")
-    : "raw portfolio value incl. cash additions";
+    ? "unitized return; deposits and withdrawals neutralized"
+    : "total portfolio value: holdings plus cash";
+  const warningRows = (performance.warnings || []).slice(0, 3).map((warning) => `
+    <div class="performance-warning-row">${escapeHtml(warning)}</div>
+  `).join("");
   return `
     <div class="performance-metric-strip">
     <div class="performance-stat">
@@ -880,6 +883,7 @@ function performanceStatsHtml(performance, options = {}) {
     </div>
     </div>
     <div class="performance-provider-row">${escapeHtml(performance.provider || "historical prices")} · ${escapeHtml(providerNote)} · updated ${escapeHtml(updatedAt)}${performance.warnings?.length ? ` · ${performance.warnings.length} data warnings` : ""}</div>
+    ${warningRows}
   `;
 }
 
@@ -890,16 +894,16 @@ function currentPortfolioPerformance(performance) {
   if (!performance?.points?.length || currentTotal == null || !baseCurrency) return performance;
   const points = performance.points.map((point) => ({ ...point }));
   const last = points[points.length - 1];
-  const currentPnl = performance.range === "all"
-    ? (summary.unrealizedBase || 0) + (summary.realizedGainLossBase || 0) + (summary.dividendIncomeBase || 0)
-    : (summary.unrealizedBase || 0);
+  const latestChartValue = Number(last.rawValue ?? last.value);
+  const discrepancy = Number.isFinite(latestChartValue) ? roundCurrency(currentTotal - latestChartValue) : 0;
+  const discrepancyPercent = currentTotal ? Math.abs(discrepancy / currentTotal) * 100 : 0;
   points[points.length - 1] = {
     ...last,
     value: roundCurrency(currentTotal),
     rawValue: roundCurrency(currentTotal),
-    adjustedValue: roundCurrency(currentPnl),
-    realizedValue: performance.range === "all" ? roundCurrency(summary.realizedGainLossBase || 0) : (last.realizedValue || 0),
-    dividendValue: performance.range === "all" ? roundCurrency(summary.dividendIncomeBase || 0) : (last.dividendValue || 0),
+    adjustedValue: last.adjustedValue,
+    realizedValue: last.realizedValue ?? roundCurrency(summary.realizedGainLossBase || 0),
+    dividendValue: last.dividendValue ?? roundCurrency(summary.dividendIncomeBase || 0),
     date: new Date().toISOString().slice(0, 10),
     time: new Date().toISOString()
   };
@@ -911,6 +915,10 @@ function currentPortfolioPerformance(performance) {
   const adjustedEnd = points[points.length - 1]?.adjustedValue ?? null;
   const adjustedChange = adjustedStart != null && adjustedEnd != null ? roundCurrency(adjustedEnd - adjustedStart) : null;
   const provider = String(performance.provider || "historical prices").replace(/\s+\+\s+live.*$/i, "");
+  const warnings = [...(performance.warnings || [])];
+  if (discrepancyPercent > 0.5) {
+    warnings.unshift(`Latest chart/dashboard reconciliation gap is ${signedMoney(discrepancy, baseCurrency)} (${number(discrepancyPercent, 2)}%).`);
+  }
   return {
     ...performance,
     points,
@@ -922,8 +930,9 @@ function currentPortfolioPerformance(performance) {
     endAdjustedValue: adjustedEnd,
     adjustedChangeValue: adjustedChange,
     adjustedChangePercent: adjustedStart ? roundDisplayPercent((adjustedChange / adjustedStart) * 100) : null,
-    performanceReliable: true,
-    provider: `${provider} + live dashboard value`
+    performanceReliable: performance.performanceReliable && discrepancyPercent <= 0.5,
+    provider: `${provider} + live dashboard value`,
+    warnings
   };
 }
 
@@ -1334,10 +1343,10 @@ function renderPortfolioPerformance() {
   });
   const modeToggle = $("#performanceModeToggle");
   if (modeToggle) {
-    modeToggle.textContent = state.portfolioPerformanceMode === "withCash" ? "With Cash" : "No Cash Adds";
+    modeToggle.textContent = state.portfolioPerformanceMode === "withCash" ? "Portfolio Value" : "Investment Return";
     modeToggle.title = state.portfolioPerformanceMode === "withCash"
-      ? "Raw portfolio value including cash additions"
-      : "Investment performance excluding cash additions";
+      ? "Total portfolio value: holdings plus transaction-aware cash"
+      : "Unitized investment return; deposits and withdrawals are neutralized";
   }
   const loadingText = state.portfolioPerformanceLoading ? "Loading performance history..." : "Choose a range to load performance.";
   const statusText = performance?.points?.length

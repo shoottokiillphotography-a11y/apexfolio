@@ -1447,6 +1447,13 @@ main {
   font-size: 12px;
 }
 
+.performance-warning-row {
+  margin-top: 6px;
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .clickable-metric {
   cursor: pointer;
   transition: border-color 160ms ease, background 160ms ease;
