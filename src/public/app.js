@@ -1083,6 +1083,9 @@ function setView(view, { scroll = true, updateRoute = true, alertTab = "all", ro
   if (nextView === "rules-v2" && !state.rulesV2 && !state.rulesV2Loading) {
     loadRulesV2().catch(toastError);
   }
+  if (nextView === "operations" && !state.portfolioWealth) {
+    loadRealizedIncome().catch(toastError);
+  }
 }
 
 function openAlertCenter({ tab = "all", scroll = false } = {}) {
@@ -1227,8 +1230,8 @@ async function loadDashboard(refresh = false) {
     saveCachedDashboardSnapshot();
     render();
     renderAccountState();
-    if (!state.portfolioPerformance) loadPortfolioPerformance().catch(() => undefined);
-    loadRealizedIncome().catch(() => undefined);
+    if (!state.portfolioPerformance) renderPortfolioPerformance();
+    if (state.currentView === "operations") loadRealizedIncome().catch(() => undefined);
     newsPromise.then((newsPayload) => {
       state.news = newsPayload;
       saveCachedDashboardSnapshot();
@@ -1542,6 +1545,12 @@ function portfolioPerformanceForView(wealth = state.portfolioPerformance) {
   return verifiedPortfolioPerformance(wealth);
 }
 
+function performanceRequestTimeout(ms = 12000) {
+  return new Promise((_, reject) => {
+    setTimeout(() => reject(new Error("Performance data took too long to load. The rest of the app is still usable.")), ms);
+  });
+}
+
 function renderWealthBridgeChart(selector, performance) {
   const svg = $(selector);
   if (!svg) return;
@@ -1593,42 +1602,53 @@ function renderWealthBridgeChart(selector, performance) {
 }
 
 function renderPortfolioPerformance() {
-  renderRangeTabs();
-  const performance = portfolioPerformanceForView(state.portfolioPerformance);
-  const [, , title] = performanceViewMeta();
-  ["#portfolioPerformanceTitle", "#portfolioPerformanceTitlePortfolio"].forEach((selector) => {
-    const node = $(selector);
-    if (node) node.textContent = title;
-  });
-  document.querySelectorAll("[data-performance-card]").forEach((card) => {
-    const dashboardCard = card.dataset.performanceCard === "dashboard";
-    const collapsed = dashboardCard ? state.dashboardChartCollapsed : state.portfolioChartCollapsed;
-    card.classList.toggle("collapsed", collapsed);
-    const button = card.querySelector('[data-action="togglePortfolioChart"]');
-    if (button) button.textContent = collapsed ? "Show chart" : "Hide chart";
-  });
-  const loadingText = state.portfolioPerformanceLoading ? "Loading performance history..." : "Choose a range to load performance.";
-  const statusText = performance?.points?.length
-    ? `${performance.points.length} points | ${performance.provider || "portfolio data"}`
-    : loadingText;
-  ["#portfolioPerformanceStatus", "#portfolioPerformanceStatusPortfolio"].forEach((selector) => {
-    const node = $(selector);
-    if (node) node.textContent = statusText;
-  });
-  ["#portfolioPerformanceStats", "#portfolioPerformanceStatsPortfolio"].forEach((selector) => {
-    const node = $(selector);
-    if (node) node.innerHTML = performanceStatsHtml(performance, { portfolio: true });
-  });
-  const emptyMessage = state.portfolioPerformanceLoading
-    ? "Loading performance history..."
-    : performance?.emptyMessage || "Choose a range to load performance";
-  if (!state.dashboardChartCollapsed) {
-    if (state.portfolioPerformanceView === "wealth_bridge") renderWealthBridgeChart("#portfolioPerformanceChart", performance);
-    else renderPerformanceChart("#portfolioPerformanceChart", performance, emptyMessage, "withCash");
-  }
-  if (!state.portfolioChartCollapsed) {
-    if (state.portfolioPerformanceView === "wealth_bridge") renderWealthBridgeChart("#portfolioPerformanceChartPortfolio", performance);
-    else renderPerformanceChart("#portfolioPerformanceChartPortfolio", performance, emptyMessage, "withCash");
+  try {
+    renderRangeTabs();
+    const performance = portfolioPerformanceForView(state.portfolioPerformance);
+    const [, , title] = performanceViewMeta();
+    ["#portfolioPerformanceTitle", "#portfolioPerformanceTitlePortfolio"].forEach((selector) => {
+      const node = $(selector);
+      if (node) node.textContent = title;
+    });
+    document.querySelectorAll("[data-performance-card]").forEach((card) => {
+      const dashboardCard = card.dataset.performanceCard === "dashboard";
+      const collapsed = dashboardCard ? state.dashboardChartCollapsed : state.portfolioChartCollapsed;
+      card.classList.toggle("collapsed", collapsed);
+      const button = card.querySelector('[data-action="togglePortfolioChart"]');
+      if (button) button.textContent = collapsed ? "Show chart" : "Hide chart";
+    });
+    const idleText = state.portfolioPerformance
+      ? "Choose a range to reload performance."
+      : "Open the chart to load verified performance data.";
+    const loadingText = state.portfolioPerformanceLoading ? "Loading performance history..." : idleText;
+    const statusText = performance?.points?.length
+      ? `${performance.points.length} points | ${performance.provider || "portfolio data"}`
+      : loadingText;
+    ["#portfolioPerformanceStatus", "#portfolioPerformanceStatusPortfolio"].forEach((selector) => {
+      const node = $(selector);
+      if (node) node.textContent = statusText;
+    });
+    ["#portfolioPerformanceStats", "#portfolioPerformanceStatsPortfolio"].forEach((selector) => {
+      const node = $(selector);
+      if (node) node.innerHTML = performanceStatsHtml(performance, { portfolio: true });
+    });
+    const emptyMessage = state.portfolioPerformanceLoading
+      ? "Loading performance history..."
+      : performance?.emptyMessage || "Open the chart to load performance";
+    if (!state.dashboardChartCollapsed) {
+      if (state.portfolioPerformanceView === "wealth_bridge") renderWealthBridgeChart("#portfolioPerformanceChart", performance);
+      else renderPerformanceChart("#portfolioPerformanceChart", performance, emptyMessage, "withCash");
+    }
+    if (!state.portfolioChartCollapsed) {
+      if (state.portfolioPerformanceView === "wealth_bridge") renderWealthBridgeChart("#portfolioPerformanceChartPortfolio", performance);
+      else renderPerformanceChart("#portfolioPerformanceChartPortfolio", performance, emptyMessage, "withCash");
+    }
+  } catch (error) {
+    console.error("Performance render failed", error);
+    ["#portfolioPerformanceStatus", "#portfolioPerformanceStatusPortfolio"].forEach((selector) => {
+      const node = $(selector);
+      if (node) node.textContent = "Performance chart paused. Portfolio data remains available.";
+    });
   }
 }
 
@@ -1642,7 +1662,10 @@ async function loadPortfolioPerformance(range = state.portfolioPerformanceRange,
   renderPortfolioPerformance();
   try {
     const wealthRange = wealthRangeForPerformance(range);
-    state.portfolioPerformance = await api(`/api/portfolio-wealth?range=${encodeURIComponent(wealthRange)}`);
+    state.portfolioPerformance = await Promise.race([
+      api(`/api/portfolio-wealth?range=${encodeURIComponent(wealthRange)}`),
+      performanceRequestTimeout()
+    ]);
     state.portfolioPerformance.requestedRange = range;
   } catch (error) {
     state.portfolioPerformance = {
@@ -7351,6 +7374,9 @@ document.addEventListener("click", async (event) => {
       state.portfolioPerformanceView = target.dataset.performanceView;
       localStorage.setItem("portfolioPerformanceView", state.portfolioPerformanceView);
       renderPortfolioPerformance();
+      if (!state.portfolioPerformance || !state.dashboardChartCollapsed || !state.portfolioChartCollapsed) {
+        await loadPortfolioPerformance(state.portfolioPerformanceRange, { force: !state.portfolioPerformance });
+      }
       return;
     }
     if (target.dataset.performanceRange) {
@@ -7484,6 +7510,10 @@ document.addEventListener("click", async (event) => {
         localStorage.setItem("portfolioChartCollapsed", String(state.portfolioChartCollapsed));
       }
       renderPortfolioPerformance();
+      const shouldLoadPerformance = !state.portfolioPerformance || !state.dashboardChartCollapsed || !state.portfolioChartCollapsed;
+      if (shouldLoadPerformance) {
+        await loadPortfolioPerformance(state.portfolioPerformanceRange, { force: !state.portfolioPerformance });
+      }
     }
     if (action === "togglePerformanceMode") {
       state.portfolioPerformanceMode = state.portfolioPerformanceMode === "withCash" ? "withoutCash" : "withCash";
