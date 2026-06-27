@@ -5375,3 +5375,618 @@ tr.closed-position > td:first-child {
     flex: 1 1 100%;
   }
 }
+
+/* ApexFolio Mobile V1: additive mobile interface, desktop unchanged above 760px. */
+:root {
+  --mobile-nav-height: 78px;
+}
+
+.mobile-more-tab,
+.mobile-home,
+.mobile-holdings-list,
+.mobile-downloads-card {
+  display: none;
+}
+
+.mobile-more-panel {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .app-shell {
+    min-height: 100dvh;
+  }
+
+  .workspace,
+  main {
+    padding-bottom: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom) + 16px);
+  }
+
+  .top-nav {
+    min-height: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom));
+    padding-top: 7px;
+  }
+
+  .mobile-more-tab {
+    display: inline-flex;
+  }
+
+  .view-tab[data-view-tab="operations"] {
+    display: none;
+  }
+
+  .view-tab[data-view-tab="dashboard"] { order: 1; }
+  .view-tab[data-view-tab="portfolio"] { order: 2; }
+  .view-tab[data-view-tab="alerts"] { order: 3; }
+  .view-tab[data-view-tab="research"] { order: 4; }
+  .view-tab[data-view-tab="more"] { order: 5; }
+
+  .view-tab {
+    min-height: 56px;
+    min-width: 44px;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .view-tab.active {
+    border-color: color-mix(in srgb, var(--accent) 44%, transparent);
+    background: rgba(var(--accent-rgb), 0.1);
+  }
+
+  .nav-label {
+    font-size: clamp(9px, 2.6vw, 11px);
+  }
+
+  .app-header {
+    position: sticky;
+    top: 0;
+    z-index: 18;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 10px;
+    padding: 14px 14px 12px;
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .app-header .eyebrow {
+    margin-bottom: 5px;
+    font-size: 9px;
+  }
+
+  .app-header h1 {
+    font-size: 30px;
+    line-height: 1;
+  }
+
+  .app-header .header-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .app-header .header-actions > *:not(.field):not(#refreshPrices) {
+    display: none;
+  }
+
+  .app-header .header-actions .field {
+    max-width: 88px;
+  }
+
+  .app-header .header-actions .field span {
+    display: none;
+  }
+
+  .app-header .header-actions .button,
+  .app-header .header-actions select {
+    min-height: 44px;
+    font-size: 12px;
+  }
+
+  .alert-banner {
+    margin: 12px 14px 0;
+  }
+
+  .summary-grid,
+  .market-pulse-card,
+  .signals-band,
+  #dashboardAllocationTable,
+  [data-performance-card="portfolio"],
+  #allocationCard,
+  #holdingsTable,
+  #holdingsHead,
+  #holdingsBody,
+  .table-wrap,
+  label:has(#holdingsViewMode),
+  #holdingsViewMode,
+  #holdingsViewMode + *,
+  .research-memo-band,
+  .valuation-monitor-band,
+  .corporate-events-band,
+  [data-action="seedStrategyAlerts"],
+  [data-action="enableDesktopAlerts"],
+  .rules-v2-table {
+    display: none !important;
+  }
+
+  .mobile-home {
+    display: grid;
+    gap: 14px;
+  }
+
+  .mobile-card,
+  .mobile-holding-card,
+  .mobile-more-card {
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--card-elevated) 92%, var(--accent) 8%), var(--card));
+  }
+
+  .mobile-hero {
+    display: grid;
+    gap: 16px;
+    padding: 20px;
+    border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border));
+    border-radius: 24px;
+    background:
+      linear-gradient(135deg, rgba(var(--accent-rgb), 0.12), transparent 55%),
+      var(--card-elevated);
+  }
+
+  .mobile-hero strong {
+    display: block;
+    margin-top: 5px;
+    font-family: var(--font-mono);
+    font-size: clamp(32px, 10vw, 46px);
+    line-height: 1;
+    letter-spacing: -0.03em;
+  }
+
+  .mobile-hero-currency,
+  .mobile-hero-change span,
+  .mobile-hero-return span {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+  }
+
+  .mobile-hero-change,
+  .mobile-hero-return {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .mobile-hero-change strong,
+  .mobile-hero-return strong {
+    margin: 0;
+    font-size: 18px;
+  }
+
+  .mobile-hero-change em {
+    font-style: normal;
+    font-family: var(--font-mono);
+  }
+
+  .mobile-details,
+  .mobile-attention,
+  .mobile-opportunities,
+  .mobile-allocation {
+    padding: 16px;
+  }
+
+  .mobile-details summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    color: var(--text);
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .mobile-metric-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .mobile-metric-grid > div,
+  .mobile-allocation-rows > div {
+    padding: 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    background: var(--bg-2);
+  }
+
+  .mobile-metric-grid span,
+  .mobile-allocation-rows span,
+  .mobile-holding-metrics span {
+    display: block;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .mobile-metric-grid strong,
+  .mobile-allocation-rows strong {
+    display: block;
+    margin-top: 4px;
+    font-family: var(--font-mono);
+    font-size: 15px;
+  }
+
+  .mobile-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .mobile-action-row,
+  .mobile-opportunity-row,
+  .mobile-more-row {
+    width: 100%;
+    min-height: 48px;
+    display: grid;
+    gap: 3px;
+    padding: 12px 0;
+    color: var(--text);
+    text-align: left;
+    text-decoration: none;
+    border: 0;
+    border-top: 1px solid var(--hairline);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .mobile-action-row:active,
+  .mobile-opportunity-row:active,
+  .mobile-more-row:active,
+  .mobile-holding-card:active {
+    transform: scale(0.992);
+    background: rgba(var(--accent-rgb), 0.06);
+  }
+
+  .mobile-action-row span,
+  .mobile-opportunity-row em,
+  .mobile-more-static span {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .mobile-action-row strong,
+  .mobile-opportunity-row strong {
+    font-size: 15px;
+  }
+
+  .mobile-action-row em {
+    color: var(--accent);
+    font-style: normal;
+    font-size: 12px;
+  }
+
+  .mobile-opportunity-row {
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    column-gap: 10px;
+  }
+
+  .mobile-opportunity-row span:not(.decision-pill),
+  .mobile-opportunity-row em {
+    grid-column: 1 / -1;
+  }
+
+  .mobile-allocation-rows {
+    display: grid;
+    gap: 10px;
+  }
+
+  .dashboard-allocation-layout,
+  .dashboard-intelligence-grid,
+  .dashboard-stack,
+  .two-column,
+  .stock-cols,
+  .stock-stack,
+  .rules-center-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-intelligence-grid > div {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .performance-band .band-header,
+  .band-header,
+  .alert-command-head,
+  .alert-command-footer {
+    align-items: stretch;
+  }
+
+  .performance-view-tabs {
+    max-width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 2px;
+  }
+
+  .performance-chart-shell {
+    min-height: 220px;
+    overflow: hidden;
+    touch-action: pan-y;
+  }
+
+  .performance-chart {
+    min-height: 220px;
+  }
+
+  .holdings-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .mobile-holdings-search {
+    grid-column: 1 / -1;
+  }
+
+  .mobile-holdings-list {
+    display: grid;
+    gap: 12px;
+    margin-top: 14px;
+  }
+
+  .mobile-holding-card {
+    display: grid;
+    gap: 14px;
+    padding: 16px;
+    cursor: pointer;
+    outline: none;
+  }
+
+  .mobile-holding-card:focus-visible,
+  .mobile-more-row:focus-visible,
+  .mobile-action-row:focus-visible,
+  .mobile-opportunity-row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .mobile-holding-head,
+  .mobile-holding-foot {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .mobile-holding-head strong {
+    display: inline-grid;
+    place-items: center;
+    min-width: 54px;
+    min-height: 30px;
+    padding: 0 11px;
+    border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+    border-radius: 999px;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 14px;
+  }
+
+  .mobile-holding-head span {
+    display: block;
+    margin-top: 7px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-holding-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .mobile-holding-metrics strong {
+    display: block;
+    margin-bottom: 4px;
+    font-family: var(--font-mono);
+    font-size: 16px;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-holding-secondary {
+    color: var(--text-2);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .mobile-risk-chip {
+    max-width: 60%;
+    padding: 4px 9px;
+    border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+    border-radius: 999px;
+    color: var(--warning);
+    font-size: 11px;
+    text-align: right;
+  }
+
+  .mobile-downloads-card {
+    display: block;
+  }
+
+  .mobile-download-actions {
+    display: grid;
+    gap: 10px;
+  }
+
+  .mobile-more-panel.active {
+    display: block;
+  }
+
+  .mobile-more-grid {
+    display: grid;
+    gap: 14px;
+  }
+
+  .mobile-more-card {
+    padding: 16px;
+  }
+
+  .mobile-more-static {
+    display: grid;
+    gap: 4px;
+    padding: 12px 0;
+    border-top: 1px solid var(--hairline);
+  }
+
+  .mobile-desktop-admin ul {
+    margin: 12px 0 0;
+    padding-left: 18px;
+    color: var(--text-2);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .cash-item,
+  .portfolio-alert-row,
+  .alert-card,
+  .watchlist-card-row,
+  .news-card-row,
+  .signal-card-row,
+  .compact-row {
+    border-radius: 16px;
+  }
+
+  .alert-tabs,
+  .range-tabs {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .alert-tab,
+  .range-tab,
+  .button,
+  select,
+  input,
+  textarea {
+    min-height: 44px;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  dialog {
+    width: 100dvw;
+    max-width: 100dvw;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    padding: 0;
+  }
+
+  dialog::backdrop {
+    background: rgba(0, 0, 0, 0.72);
+  }
+
+  .dialog-panel {
+    width: 100%;
+    min-height: 100dvh;
+    max-height: 100dvh;
+    overflow: auto;
+    border-radius: 0;
+    border: 0;
+    padding: max(18px, env(safe-area-inset-top)) 16px calc(18px + env(safe-area-inset-bottom));
+  }
+
+  .dialog-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    margin: -18px -16px 16px;
+    padding: max(14px, env(safe-area-inset-top)) 16px 12px;
+    background: var(--card-elevated);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .dialog-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin: 16px -16px calc(-18px - env(safe-area-inset-bottom));
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: var(--card-elevated);
+    border-top: 1px solid var(--border);
+  }
+
+  .dialog-actions .button {
+    flex: 1 1 auto;
+  }
+
+  .stock-page-head {
+    position: sticky;
+    top: 72px;
+    z-index: 9;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    padding: 12px;
+    margin: -4px -4px 12px;
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--card-elevated) 94%, transparent);
+  }
+
+  .stock-page-head .button-row {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  #stockQuoteTiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .profile-facts,
+  .fundamentals-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 430px) {
+  main {
+    padding-inline: 10px;
+  }
+
+  .band,
+  .mobile-card,
+  .mobile-holding-card {
+    border-radius: 16px;
+  }
+
+  .mobile-holding-metrics,
+  .mobile-metric-grid {
+    gap: 8px;
+  }
+
+  .mobile-holding-metrics strong {
+    font-size: 14px;
+  }
+}

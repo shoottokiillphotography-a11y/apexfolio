@@ -8,7 +8,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
     <link rel="apple-touch-icon" href="/favicon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=lnw-1">
+    <link rel="stylesheet" href="/styles.css?v=mobile-v1">
   </head>
   <body>
     <section class="auth-gate" id="authGate" hidden>
@@ -100,6 +100,16 @@
             <span class="nav-label">Alerts</span>
             <span class="tab-count alert-count" id="alertsTabCount"></span>
           </button>
+          <button class="view-tab mobile-more-tab" data-view-tab="more" aria-selected="false" type="button">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M5 12h14"></path>
+                <path d="M5 7h14"></path>
+                <path d="M5 17h14"></path>
+              </svg>
+            </span>
+            <span class="nav-label">More</span>
+          </button>
           <button class="view-tab" data-view-tab="operations" aria-selected="false" type="button">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false">
@@ -128,7 +138,7 @@
         <header class="app-header">
           <div>
             <p class="eyebrow">Investment Portfolio</p>
-            <h1>Command Center</h1>
+            <h1 id="mobileViewTitle">Command Center</h1>
           </div>
           <div class="header-actions">
             <label class="field compact">
@@ -151,6 +161,14 @@
 
         <main>
       <section class="view-panel active" data-view-panel="dashboard">
+        <section class="mobile-home" id="mobileHome" aria-label="Mobile portfolio home">
+          <div class="mobile-hero" id="mobileHomeHero"></div>
+          <div class="mobile-card mobile-details" id="mobileHomeDetails"></div>
+          <div class="mobile-card mobile-attention" id="mobileAttention"></div>
+          <div class="mobile-card mobile-opportunities" id="mobileOpportunities"></div>
+          <div class="mobile-card mobile-allocation" id="mobileAllocationCompact"></div>
+        </section>
+
         <section class="summary-grid" id="summaryGrid"></section>
 
         <section class="band dashboard-allocation-card">
@@ -245,7 +263,7 @@
         </section>
 
         <section class="dashboard-stack">
-          <div class="band">
+          <div class="band news-band">
             <div class="band-header">
               <div>
                 <p class="eyebrow">News</p>
@@ -256,7 +274,7 @@
             </div>
             <div id="marketNewsTable" class="compact-table"></div>
           </div>
-          <div class="band">
+          <div class="band signals-band">
             <div class="band-header">
               <div>
                 <p class="eyebrow">Verified signals</p>
@@ -337,6 +355,10 @@
             </div>
           </div>
           <div class="holdings-controls">
+            <label class="field compact mobile-holdings-search">
+              <span>Search</span>
+              <input id="mobileHoldingsSearch" type="search" placeholder="Ticker or company">
+            </label>
             <label class="field compact">
               <span>View</span>
               <select id="holdingsViewMode">
@@ -365,6 +387,7 @@
               </select>
             </label>
           </div>
+          <div id="mobileHoldingsList" class="mobile-holdings-list"></div>
           <div class="table-wrap">
             <table id="holdingsTable">
               <thead id="holdingsHead"></thead>
@@ -434,6 +457,20 @@
           </form>
           <div id="externalTransactionsTable" class="compact-table"></div>
         </section>
+
+        <section class="band mobile-downloads-card">
+          <div class="band-header">
+            <div>
+              <h2>Downloads</h2>
+              <p class="muted">Save clean copies of current portfolio and history.</p>
+            </div>
+          </div>
+          <div class="mobile-download-actions">
+            <a class="button primary" href="/api/exports/portfolio" download>Portfolio snapshot</a>
+            <a class="button secondary" href="/api/exports/history" download>History journal</a>
+            <a class="button secondary" href="/api/exports/triggered-alerts" download>Triggered alerts</a>
+          </div>
+        </section>
       </section>
 
       <section class="view-panel" data-view-panel="research">
@@ -492,7 +529,7 @@
             <div id="watchlistTable" class="compact-table"></div>
           </div>
 
-          <div class="band">
+          <div class="band research-memo-band">
             <div class="band-header">
               <h2>Research Memo</h2>
             </div>
@@ -505,7 +542,7 @@
         </section>
 
         <section class="two-column">
-          <div class="band">
+          <div class="band valuation-monitor-band">
             <div class="band-header">
               <div>
                 <p class="eyebrow">Valuation Monitor</p>
@@ -516,7 +553,7 @@
             </div>
             <div id="valuationTable" class="compact-table"></div>
           </div>
-          <div class="band">
+          <div class="band corporate-events-band">
             <div class="band-header">
               <h2>Corporate Events</h2>
               <button class="button secondary" data-action="refreshEvents" type="button">Refresh Events</button>
@@ -968,6 +1005,53 @@
         </section>
       </section>
 
+      <section class="view-panel mobile-more-panel" data-view-panel="more">
+        <section class="band">
+          <div class="band-header">
+            <div>
+              <p class="eyebrow">Mobile Workspace</p>
+              <h2>More</h2>
+              <p class="muted">Portfolio activity, exports, rules summary, and account actions.</p>
+            </div>
+          </div>
+          <div class="mobile-more-grid">
+            <article class="mobile-more-card">
+              <p class="eyebrow">Portfolio activity</p>
+              <button class="mobile-more-row" data-view-jump="operations" data-scroll-target="realizedIncomeBand" type="button">Transactions and realized results</button>
+              <button class="mobile-more-row" data-view-jump="portfolio" type="button">Cash accounts</button>
+              <button class="mobile-more-row" data-view-jump="portfolio" type="button">Dividends</button>
+            </article>
+            <article class="mobile-more-card">
+              <p class="eyebrow">Rules</p>
+              <button class="mobile-more-row" data-view-jump="rules-v2" type="button">Rules summary</button>
+              <button class="mobile-more-row" data-view-jump="alerts" data-scroll-target="alertsBand" type="button">Risk queue and alerts</button>
+            </article>
+            <article class="mobile-more-card">
+              <p class="eyebrow">Exports</p>
+              <a class="mobile-more-row" href="/api/exports/portfolio" download>Portfolio snapshot</a>
+              <a class="mobile-more-row" href="/api/exports/history" download>History journal</a>
+              <a class="mobile-more-row" href="/api/exports/triggered-alerts" download>Triggered alerts</a>
+            </article>
+            <article class="mobile-more-card">
+              <p class="eyebrow">Settings</p>
+              <div class="mobile-more-static" id="mobileMoreAccount"></div>
+              <button class="mobile-more-row" data-action="logout" type="button">Log out</button>
+            </article>
+            <article class="mobile-more-card mobile-desktop-admin">
+              <p class="eyebrow">Desktop administration</p>
+              <p class="muted">Advanced administration is available on desktop.</p>
+              <ul>
+                <li>Imports and portfolio replacement</li>
+                <li>Provider API keys</li>
+                <li>User administration</li>
+                <li>Scheduler and notifications</li>
+                <li>Group Manager and advanced rules comparison</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+      </section>
+
       <section class="view-panel" data-view-panel="stock">
         <section class="band stock-page">
           <div class="stock-page-head">
@@ -1334,6 +1418,6 @@
       </div>
     </dialog>
 
-    <script src="/app.js?v=lnw-1" type="module"></script>
+    <script src="/app.js?v=mobile-v1" type="module"></script>
   </body>
 </html>

@@ -10,21 +10,44 @@ function loadHoldingsView() {
 
 const savedHoldingsView = loadHoldingsView();
 const urlParams = new URLSearchParams(location.search);
-const ROUTED_VIEWS = new Set(["dashboard", "portfolio", "research", "alerts", "rules-v2", "operations"]);
+const mobileQuery = window.matchMedia("(max-width: 760px)");
+const ROUTED_VIEWS = new Set(["dashboard", "portfolio", "research", "alerts", "rules-v2", "operations", "more", "stock"]);
+const MOBILE_VIEW_TITLES = {
+  dashboard: "Home",
+  portfolio: "Portfolio",
+  alerts: "Alerts",
+  research: "Research",
+  more: "More",
+  "rules-v2": "Rules",
+  operations: "More",
+  stock: "Stock"
+};
+
+function isMobileView() {
+  return mobileQuery.matches;
+}
+
+function normalizeViewForViewport(view) {
+  if (isMobileView() && view === "operations") return "more";
+  if (!isMobileView() && view === "more") return "operations";
+  return view;
+}
 
 function routeStateFromLocation() {
   const path = location.pathname.replace(/\/+$/, "") || "/";
   const routeView = path === "/" ? null : path.slice(1);
-  const view = path === "/"
+  const rawView = path === "/"
     ? "dashboard"
     : ROUTED_VIEWS.has(routeView)
       ? routeView
       : localStorage.getItem("currentView") || "dashboard";
+  const view = normalizeViewForViewport(rawView);
   const query = new URLSearchParams(location.search);
   return {
     view,
     alertTab: query.get("tab") === "triggered" ? "triggered" : "all",
-    routeTab: query.get("tab") || ""
+    routeTab: query.get("tab") || "",
+    stockTicker: query.get("symbol") || ""
   };
 }
 
@@ -32,6 +55,7 @@ function pathForView(view, options = {}) {
   const normalized = ROUTED_VIEWS.has(view) ? view : "dashboard";
   const path = normalized === "dashboard" ? "/" : `/${normalized}`;
   const query = new URLSearchParams();
+  if (normalized === "stock" && (options.ticker || state.currentStockTicker)) query.set("symbol", options.ticker || state.currentStockTicker);
   if (normalized === "alerts" && options.alertTab === "triggered") query.set("tab", "triggered");
   if (normalized === "research" && options.routeTab) query.set("tab", options.routeTab);
   if (normalized === "portfolio" && options.routeTab) query.set("tab", options.routeTab);
@@ -194,6 +218,7 @@ const state = {
   holdingsSort: savedHoldingsView.sort || "alphabetical",
   holdingsGroup: savedHoldingsView.group || "none",
   holdingsViewMode: savedHoldingsView.viewMode || "current",
+  mobileHoldingsSearch: localStorage.getItem("mobileHoldingsSearch") || "",
   dashboardChartCollapsed: localStorage.getItem("dashboardChartCollapsed") !== "false",
   portfolioChartCollapsed: localStorage.getItem("portfolioChartCollapsed") === "true",
   allocationCollapsed: localStorage.getItem("allocationCollapsed") === "true",
@@ -215,7 +240,7 @@ const state = {
   news: cachedDashboardSnapshot.news || null,
   portfolioPerformanceLoading: false,
   stockPerformanceRange: localStorage.getItem("stockPerformanceRange") || "1y",
-  currentStockTicker: "",
+  currentStockTicker: initialRouteState.stockTicker || "",
   stockPreviousView: localStorage.getItem("currentView") || "dashboard",
   stockDetail: null,
   stockPerformance: null,
@@ -1054,12 +1079,16 @@ function toastError(error) {
 }
 
 function setView(view, { scroll = true, updateRoute = true, alertTab = "all", routeTab = "" } = {}) {
-  const nextView = ["dashboard", "portfolio", "research", "alerts", "rules-v2", "operations", "stock"].includes(view) ? view : "dashboard";
+  const requestedView = ["dashboard", "portfolio", "research", "alerts", "rules-v2", "operations", "more", "stock"].includes(view) ? view : "dashboard";
+  const nextView = normalizeViewForViewport(requestedView);
   state.currentView = nextView;
   if (nextView === "alerts") state.alertTab = alertTab;
   state.routeTab = routeTab;
   if (nextView !== "stock") localStorage.setItem("currentView", nextView);
-  if (updateRoute && nextView !== "stock") syncBrowserRoute(nextView, { alertTab: state.alertTab, routeTab });
+  if (updateRoute) syncBrowserRoute(nextView, { alertTab: state.alertTab, routeTab, ticker: state.currentStockTicker });
+  document.body.classList.toggle("is-mobile-layout", isMobileView());
+  const titleNode = $("#mobileViewTitle");
+  if (titleNode) titleNode.textContent = MOBILE_VIEW_TITLES[nextView] || "Command Center";
   document.querySelectorAll("[data-view-tab]").forEach((button) => {
     const active = button.dataset.viewTab === nextView;
     button.classList.toggle("active", active);
@@ -3986,6 +4015,267 @@ function renderHoldingsSnapshot() {
   }).join("");
 }
 
+function ruleForTicker(ticker) {
+  const normalized = String(ticker || "").toUpperCase();
+  const rows = state.rulesV2?.evaluations || [];
+  return rows.find((row) => String(row.ticker || "").toUpperCase() === normalized && row.scope === "PORTFOLIO")
+    || rows.find((row) => String(row.ticker || "").toUpperCase() === normalized);
+}
+
+function mobileActionForPosition(position) {
+  const rule = ruleForTicker(position.ticker);
+  if (rule?.finalAction) return rule.finalAction;
+  if (!position.price?.price) return "DATA REVIEW";
+  const exposure = positionExposure(position);
+  if (exposure >= 15) return "TRIM";
+  if (exposure >= 10) return "REVIEW";
+  if ((position.unrealizedPercent || 0) <= -20) return "REVIEW";
+  return "HOLD";
+}
+
+function mobileRiskForPosition(position) {
+  const rule = ruleForTicker(position.ticker);
+  const exposure = positionExposure(position);
+  const marketStatus = quotePriceLabel(position.price, position.ticker);
+  if (!position.price?.price || ["UNAVAILABLE", "DATA_GAP", "STALE", "UNKNOWN"].includes(marketStatus)) {
+    return "Missing or stale live price";
+  }
+  if (rule?.primaryRule) return rule.primaryRule;
+  if (exposure >= 15) return "Position hard limit";
+  if (exposure >= 10) return "Position soft limit";
+  if ((position.unrealizedPercent || 0) <= -20) return "Large unrealized drawdown";
+  const triggered = (state.dashboard.alerts || []).find((alert) => alert.ticker === position.ticker && alertStatus(alert).bucket === "triggered");
+  return triggered ? "Triggered alert" : "";
+}
+
+function renderMobileHome() {
+  const node = $("#mobileHome");
+  if (!node || !state.dashboard) return;
+  const { summary, user, allocation = [], positions = [], alerts = [], warnings = [] } = state.dashboard;
+  const base = user.baseCurrency;
+  const dayClass = valueClass(summary.dayChangeBase || 0);
+  const totalReturn = (summary.unrealizedBase || 0) + (summary.realizedGainLossBase || 0);
+  const triggeredAlerts = alerts.filter((alert) => alertStatus(alert).bucket === "triggered");
+  const rulesRows = state.rulesV2?.evaluations || [];
+  const rulesBuckets = rulesCenterBuckets(rulesRows);
+  const attentionItems = [
+    ...triggeredAlerts.slice(0, 3).map((alert) => ({
+      title: alert.ticker,
+      issue: alert.label || alertTypeLabel(alert),
+      severity: "High",
+      action: "Review alert",
+      view: "alerts"
+    })),
+    ...rulesBuckets.trim.slice(0, 3).map((item) => ({
+      title: item.ticker,
+      issue: item.primaryRule || item.reason || "Trim or concentration rule",
+      severity: item.priority || "High",
+      action: item.finalAction || "Review",
+      view: "portfolio"
+    })),
+    ...rulesBuckets.data.slice(0, 2).map((item) => ({
+      title: item.ticker,
+      issue: item.dataState || "Data quality issue",
+      severity: "Medium",
+      action: "Refresh data",
+      view: "portfolio"
+    })),
+    ...warnings.slice(0, 2).map((warning) => ({
+      title: "Portfolio",
+      issue: warning,
+      severity: "Medium",
+      action: "Review",
+      view: "portfolio"
+    }))
+  ].slice(0, 6);
+  const opportunities = [
+    ...(rulesBuckets.eligible || []).map((item) => ({
+      ticker: item.ticker,
+      status: item.finalAction || item.underlyingSignal || "ADD",
+      text: item.primaryRule || item.reason || "Eligible under Rules V2",
+      value: item.valueScore,
+      fit: item.portfolioFitScore,
+      source: "Rules V2"
+    })),
+    ...(state.dashboard.intelligence?.opportunities || []).map((item) => ({
+      ticker: item.ticker,
+      status: item.status || "ADD",
+      text: item.text || "Watchlist opportunity",
+      value: item.convictionScore,
+      fit: item.fitScore,
+      source: "Command"
+    }))
+  ].slice(0, 4);
+  const openPositions = positions.filter((position) => !position.closed && (Number(position.quantity) || 0) > 0)
+    .sort((a, b) => (b.currentValueBase || 0) - (a.currentValueBase || 0));
+  const largest = openPositions[0];
+  const top3 = openPositions.slice(0, 3).reduce((sum, position) => sum + (position.currentValueBase || 0), 0);
+  const top5 = openPositions.slice(0, 5).reduce((sum, position) => sum + (position.currentValueBase || 0), 0);
+  const largestTheme = [...allocation].sort((a, b) => (b.actualPercent || 0) - (a.actualPercent || 0))[0];
+  const allocationWarning = [...allocation]
+    .map((row) => ({ ...row, varianceAbs: Math.abs(row.variancePercent || 0) }))
+    .sort((a, b) => b.varianceAbs - a.varianceAbs)[0];
+
+  $("#mobileHomeHero").innerHTML = `
+    <div>
+      <p class="eyebrow">Portfolio</p>
+      <strong>${money(summary.totalValueBase, base)}</strong>
+      <span class="mobile-hero-currency">${escapeHtml(base)}</span>
+    </div>
+    <div class="mobile-hero-change ${dayClass}">
+      <span>Today</span>
+      <strong>${signedMoney(summary.dayChangeBase || 0, base)}</strong>
+      <em>${signedPercent(summary.dayChangePercent || 0)}</em>
+    </div>
+    <div class="mobile-hero-return ${valueClass(totalReturn)}">
+      <span>Total return</span>
+      <strong>${signedMoney(totalReturn, base)}</strong>
+    </div>
+  `;
+
+  $("#mobileHomeDetails").innerHTML = `
+    <details>
+      <summary>Portfolio Details</summary>
+      <div class="mobile-metric-grid">
+        <div><span>Cash</span><strong>${money(summary.cashAvailableBase || 0, base)}</strong></div>
+        <div><span>Unrealized</span><strong class="${valueClass(summary.unrealizedBase || 0)}">${signedMoney(summary.unrealizedBase || 0, base)}</strong></div>
+        <div><span>Realized</span><strong class="${valueClass(summary.realizedGainLossBase || 0)}">${signedMoney(summary.realizedGainLossBase || 0, base)}</strong></div>
+        <div><span>Holdings</span><strong>${number(summary.holdingsCount || 0, 0)}</strong></div>
+        <div><span>Triggered</span><strong class="${triggeredAlerts.length ? "negative" : ""}">${number(triggeredAlerts.length, 0)}</strong></div>
+        <div><span>Watchlist</span><strong>${number(summary.watchlistCount || 0, 0)}</strong></div>
+      </div>
+    </details>
+  `;
+
+  $("#mobileAttention").innerHTML = `
+    <div class="mobile-card-header">
+      <div><p class="eyebrow">Needs Attention</p><h2>Review first</h2></div>
+      <span class="status-pill ${attentionItems.length ? "negative" : "live"}">${attentionItems.length}</span>
+    </div>
+    ${attentionItems.length ? attentionItems.map((item) => `
+      <button class="mobile-action-row" data-view-jump="${escapeHtml(item.view)}" type="button">
+        <span>${escapeHtml(item.title)}</span>
+        <strong>${escapeHtml(item.issue)}</strong>
+        <em>${escapeHtml(item.severity)} | ${escapeHtml(item.action)}</em>
+      </button>
+    `).join("") : `<p class="muted">Nothing urgent from alerts, allocation, data quality, or Rules V2.</p>`}
+  `;
+
+  $("#mobileOpportunities").innerHTML = `
+    <div class="mobile-card-header">
+      <div><p class="eyebrow">Opportunities</p><h2>Highest ranked</h2></div>
+      <button class="button secondary" data-view-jump="research" type="button">View all</button>
+    </div>
+    ${opportunities.length ? opportunities.map((item) => `
+      <button class="mobile-opportunity-row" data-open-stock="${escapeHtml(item.ticker)}" data-action="openStock" type="button">
+        <span class="decision-pill ${String(item.status || "HOLD").toLowerCase()}">${escapeHtml(item.status || "HOLD")}</span>
+        <strong>${escapeHtml(item.ticker)}</strong>
+        <span>${escapeHtml(item.text)}</span>
+        <em>${escapeHtml(item.source)}${item.value == null ? "" : ` | Value ${item.value}`}${item.fit == null ? "" : ` | Fit ${item.fit}`}</em>
+      </button>
+    `).join("") : `<p class="muted">No buy/add candidate is currently eligible.</p>`}
+  `;
+
+  $("#mobileAllocationCompact").innerHTML = `
+    <div class="mobile-card-header">
+      <div><p class="eyebrow">Allocation</p><h2>Concentration</h2></div>
+      <button class="button secondary" data-view-jump="portfolio" type="button">Holdings</button>
+    </div>
+    <div class="mobile-allocation-rows">
+      <div><span>Largest holding</span><strong>${largest ? `${largest.ticker} ${percent(positionExposure(largest))}` : "n/a"}</strong></div>
+      <div><span>Top 3</span><strong>${percent(summary.totalValueBase ? (top3 / summary.totalValueBase) * 100 : 0)}</strong></div>
+      <div><span>Top 5</span><strong>${percent(summary.totalValueBase ? (top5 / summary.totalValueBase) * 100 : 0)}</strong></div>
+      <div><span>Cash</span><strong>${percent(summary.totalValueBase ? ((summary.cashAvailableBase || 0) / summary.totalValueBase) * 100 : 0)}</strong></div>
+      <div><span>Largest theme</span><strong>${largestTheme ? `${largestTheme.name} ${percent(largestTheme.actualPercent || 0)}` : "n/a"}</strong></div>
+      <div><span>Main warning</span><strong>${allocationWarning ? `${allocationWarning.name} ${signedPercent(allocationWarning.variancePercent || 0)}` : "On target"}</strong></div>
+    </div>
+  `;
+}
+
+function renderMobileHoldings() {
+  const node = $("#mobileHoldingsList");
+  if (!node || !state.dashboard) return;
+  const { positions, user } = state.dashboard;
+  const search = state.mobileHoldingsSearch.trim().toUpperCase();
+  const input = $("#mobileHoldingsSearch");
+  if (input && input.value !== state.mobileHoldingsSearch) input.value = state.mobileHoldingsSearch;
+  const visible = sortPositions(positions)
+    .filter((position) => !position.closed && (Number(position.quantity) || 0) > 0)
+    .filter((position) => !search || String(position.ticker || "").toUpperCase().includes(search) || String(position.name || "").toUpperCase().includes(search));
+  if (!visible.length) {
+    node.innerHTML = `
+      <div class="empty-state mobile-empty-state">
+        <strong>No matching holdings</strong>
+        <span>Clear search or add/import a position.</span>
+      </div>
+    `;
+    return;
+  }
+  node.innerHTML = visible.map((position) => {
+    const exposure = positionExposure(position);
+    const dayChangeClass = valueClass(position.price?.changePercent || 0);
+    const totalClass = valueClass(position.unrealizedBase || 0);
+    const action = mobileActionForPosition(position);
+    const risk = mobileRiskForPosition(position);
+    const marketStatus = quotePriceLabel(position.price, position.ticker);
+    return `
+      <article class="mobile-holding-card" role="button" tabindex="0" data-action="openStock" data-open-stock="${escapeHtml(position.ticker)}" aria-label="Open ${escapeHtml(position.ticker)} stock page">
+        <div class="mobile-holding-head">
+          <div>
+            <strong>${escapeHtml(position.ticker)}</strong>
+            <span>${escapeHtml(position.name || "Company name unavailable")}</span>
+          </div>
+          <span class="decision-pill ${String(action).toLowerCase().replace(/\\s+/g, "-")}">${escapeHtml(action)}</span>
+        </div>
+        <div class="mobile-holding-metrics">
+          <div>
+            <strong>${money(position.currentValueBase, user.baseCurrency)}</strong>
+            <span>Market value</span>
+          </div>
+          <div>
+            <strong>${percent(exposure)}</strong>
+            <span>Portfolio weight</span>
+          </div>
+          <div>
+            <strong class="${dayChangeClass}">${nullableSignedPercent(position.price?.changePercent)}</strong>
+            <span>Today</span>
+          </div>
+          <div>
+            <strong class="${totalClass}">${signedMoney(position.unrealizedBase, user.baseCurrency)} / ${signedPercent(position.unrealizedPercent)}</strong>
+            <span>Total return</span>
+          </div>
+        </div>
+        <p class="mobile-holding-secondary">
+          Price ${position.price?.price == null ? "n/a" : money(position.price.price, position.price.currency || user.baseCurrency)}
+          · Qty ${number(position.quantity, 4)}
+          · Avg cost ${money(position.averagePurchasePriceBase, user.baseCurrency)}
+        </p>
+        <div class="mobile-holding-foot">
+          <span class="status-pill ${statusClassForMarket(marketStatus)}">${escapeHtml(marketStatus)}</span>
+          ${risk ? `<span class="mobile-risk-chip">${escapeHtml(risk)}</span>` : ""}
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+function renderMobileMore() {
+  const account = $("#mobileMoreAccount");
+  if (!account) return;
+  const user = state.session?.user || state.dashboard?.user;
+  account.innerHTML = `
+    <strong>${escapeHtml(user?.email || "Signed in")}</strong>
+    <span>${escapeHtml(user?.baseCurrency || state.dashboard?.user?.baseCurrency || "AUD")} base currency</span>
+    <span>Build ${escapeHtml(state.dashboard?.build || "mobile-v1")}</span>
+  `;
+}
+
+function renderMobileScreens() {
+  renderMobileHome();
+  renderMobileHoldings();
+  renderMobileMore();
+}
+
 function renderCash() {
   const { cashBalances, user } = state.dashboard;
   const totalCashBase = cashBalances.reduce((total, cash) => total + (Number(cash.amountBase) || 0), 0);
@@ -5160,7 +5450,7 @@ function renderStockPage() {
   renderStockPerformance();
 }
 
-async function openStockPage(tickerInput, { refresh = false } = {}) {
+async function openStockPage(tickerInput, { refresh = false, updateRoute = true } = {}) {
   const ticker = String(tickerInput || "").trim().toUpperCase();
   if (!ticker) return;
   if (state.currentView !== "stock") state.stockPreviousView = state.currentView;
@@ -5168,7 +5458,7 @@ async function openStockPage(tickerInput, { refresh = false } = {}) {
   state.stockDetail = null;
   state.stockPerformance = null;
   state.stockLoading = true;
-  setView("stock");
+  setView("stock", { updateRoute });
   renderStockLoading(ticker);
   try {
     const [detail, performance] = await Promise.all([
@@ -6486,11 +6776,12 @@ function render() {
   renderValuationMonitor();
   renderNewsIntelligence();
   renderPortfolioCharts();
-  renderMarketPulse();
+  if (!isMobileView()) renderMarketPulse();
   renderPortfolioPerformance();
   renderAllocation();
   renderCash();
   renderHoldings();
+  renderMobileScreens();
   renderGroupSettings();
   renderMarketPulseSuggestions();
   renderMarketPulseSettings();
@@ -6987,6 +7278,12 @@ document.addEventListener("input", (event) => {
     scheduleWatchlistSymbolSearch(target.value);
     return;
   }
+  if (target.id === "mobileHoldingsSearch") {
+    state.mobileHoldingsSearch = target.value;
+    localStorage.setItem("mobileHoldingsSearch", state.mobileHoldingsSearch);
+    renderMobileHoldings();
+    return;
+  }
   if (target.name === "symbol" && target.closest("#marketPulseForm")) {
     state.marketPulseAutocompleteIndex = 0;
     syncMarketPulseFormFromSuggestion(target.form, { rewriteSymbol: false });
@@ -7039,16 +7336,19 @@ document.addEventListener("change", async (event) => {
       state.holdingsSort = target.value;
       saveHoldingsView();
       renderHoldings();
+      renderMobileHoldings();
     }
     if (target.id === "holdingsGroup") {
       state.holdingsGroup = target.value;
       saveHoldingsView();
       renderHoldings();
+      renderMobileHoldings();
     }
     if (target.id === "holdingsViewMode") {
       state.holdingsViewMode = target.value;
       saveHoldingsView();
       renderHoldings();
+      renderMobileHoldings();
     }
     if (target.id === "watchlistFilter") {
       state.watchlistFilter = target.value;
@@ -7831,8 +8131,18 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("popstate", () => {
   const route = routeStateFromLocation();
   state.alertTab = route.alertTab;
+  if (route.view === "stock" && route.stockTicker) {
+    openStockPage(route.stockTicker, { updateRoute: false }).catch(toastError);
+    return;
+  }
   setView(route.view, { scroll: false, updateRoute: false, alertTab: route.alertTab, routeTab: route.routeTab });
   if (route.view === "alerts") renderAlerts();
+});
+
+mobileQuery.addEventListener("change", () => {
+  state.currentView = normalizeViewForViewport(state.currentView);
+  if (state.dashboard) render();
+  else setView(state.currentView, { scroll: false, updateRoute: false, alertTab: state.alertTab, routeTab: state.routeTab });
 });
 
 async function boot() {
@@ -7845,6 +8155,11 @@ async function boot() {
   }
   await loadDashboard();
   updateImportControls();
+  if (initialRouteState.view === "stock" && initialRouteState.stockTicker) {
+    await openStockPage(initialRouteState.stockTicker, { updateRoute: false });
+    configureAutoPrices();
+    return;
+  }
   setView(state.currentView, { scroll: false, updateRoute: false, alertTab: state.alertTab, routeTab: state.routeTab });
   configureAutoPrices();
 }

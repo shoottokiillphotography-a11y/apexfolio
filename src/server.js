@@ -90,7 +90,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicRoot = path.join(__dirname, "public");
 // Bump this on each backend release so /api/health and the startup log show which
 // code is actually running - the fastest way to confirm a server restart took.
-const APP_BUILD = "2026-06-27-rules-performance-v2c";
+const APP_BUILD = "2026-06-27-mobile-v1";
 let stopScheduler = null;
 
 async function setSchedulerEnabled(enabled) {
