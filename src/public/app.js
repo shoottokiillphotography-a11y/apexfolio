@@ -219,6 +219,10 @@ const state = {
   holdingsGroup: savedHoldingsView.group || "none",
   holdingsViewMode: savedHoldingsView.viewMode || "current",
   mobileHoldingsSearch: localStorage.getItem("mobileHoldingsSearch") || "",
+  mobileDetailsOpen: localStorage.getItem("mobileDetailsOpen") === "true",
+  mobileAttentionOpen: localStorage.getItem("mobileAttentionOpen") === "true",
+  mobileDividendsOpen: localStorage.getItem("mobileDividendsOpen") === "true",
+  mobileClosedTransactionsOpen: localStorage.getItem("mobileClosedTransactionsOpen") === "true",
   dashboardChartCollapsed: localStorage.getItem("dashboardChartCollapsed") !== "false",
   portfolioChartCollapsed: localStorage.getItem("portfolioChartCollapsed") === "true",
   allocationCollapsed: localStorage.getItem("allocationCollapsed") === "true",
@@ -263,6 +267,11 @@ const state = {
 };
 
 const $ = (selector) => document.querySelector(selector);
+function setPersistentFlag(key, value) {
+  state[key] = Boolean(value);
+  localStorage.setItem(key, String(state[key]));
+}
+
 const money = (value, currency) => value == null ? "n/a" : new Intl.NumberFormat(undefined, {
   style: "currency",
   currency,
@@ -1932,6 +1941,26 @@ function renderPortfolioCharts() {
         `;
       }).join("")}
     `;
+  }
+  const mobileAllocationList = $("#mobileAllocationList");
+  if (mobileAllocationList) {
+    mobileAllocationList.innerHTML = allocation.map((row) => {
+      const status = allocationStatus(row);
+      const differenceClass = status.className === "negative" ? "negative" : status.className === "warning" ? "warning-text" : "positive";
+      return `
+        <div class="mobile-allocation-target-row">
+          <span class="swatch" style="background:${escapeHtml(row.color || "#C9A86A")}"></span>
+          <div>
+            <strong>${escapeHtml(row.name)}</strong>
+            <small>${percent(row.actualPercent)} actual / ${percent(row.targetPercent)} target</small>
+          </div>
+          <div class="num">
+            <strong class="${differenceClass}">${signedPp(status.difference)}</strong>
+            <small>${money(row.subtotalBase, user.baseCurrency)}</small>
+          </div>
+        </div>
+      `;
+    }).join("");
   }
   renderConcentrationSummary();
 }
@@ -4088,24 +4117,24 @@ function renderMobileHome() {
       view: "portfolio"
     }))
   ].slice(0, 6);
-  const opportunities = [
-    ...(rulesBuckets.eligible || []).map((item) => ({
+  const desktopOpportunities = state.dashboard.dashboardIntelligence?.opportunities || [];
+  const opportunities = desktopOpportunities.length
+    ? desktopOpportunities.map((item) => ({
+      ticker: item.ticker,
+      status: item.status || "ADD",
+      text: item.text || "Currently inside a buy/add zone",
+      value: item.convictionScore,
+      fit: item.fitScore,
+      source: "Command"
+    }))
+    : (rulesBuckets.eligible || []).map((item) => ({
       ticker: item.ticker,
       status: item.finalAction || item.underlyingSignal || "ADD",
       text: item.primaryRule || item.reason || "Eligible under Rules V2",
       value: item.valueScore,
       fit: item.portfolioFitScore,
       source: "Rules V2"
-    })),
-    ...(state.dashboard.intelligence?.opportunities || []).map((item) => ({
-      ticker: item.ticker,
-      status: item.status || "ADD",
-      text: item.text || "Watchlist opportunity",
-      value: item.convictionScore,
-      fit: item.fitScore,
-      source: "Command"
-    }))
-  ].slice(0, 4);
+    })).slice(0, 4);
   const openPositions = positions.filter((position) => !position.closed && (Number(position.quantity) || 0) > 0)
     .sort((a, b) => (b.currentValueBase || 0) - (a.currentValueBase || 0));
   const largest = openPositions[0];
@@ -4134,8 +4163,11 @@ function renderMobileHome() {
   `;
 
   $("#mobileHomeDetails").innerHTML = `
-    <details>
-      <summary>Portfolio Details</summary>
+    <button class="mobile-collapse-toggle" data-action="toggleMobileDetails" type="button" aria-expanded="${state.mobileDetailsOpen}">
+      <span>Portfolio Details</span>
+      <span class="mobile-chevron">${state.mobileDetailsOpen ? "▴" : "▾"}</span>
+    </button>
+    <div class="mobile-collapsible-body" ${state.mobileDetailsOpen ? "" : "hidden"}>
       <div class="mobile-metric-grid">
         <div><span>Cash</span><strong>${money(summary.cashAvailableBase || 0, base)}</strong></div>
         <div><span>Unrealized</span><strong class="${valueClass(summary.unrealizedBase || 0)}">${signedMoney(summary.unrealizedBase || 0, base)}</strong></div>
@@ -4144,21 +4176,29 @@ function renderMobileHome() {
         <div><span>Triggered</span><strong class="${triggeredAlerts.length ? "negative" : ""}">${number(triggeredAlerts.length, 0)}</strong></div>
         <div><span>Watchlist</span><strong>${number(summary.watchlistCount || 0, 0)}</strong></div>
       </div>
-    </details>
+    </div>
   `;
 
   $("#mobileAttention").innerHTML = `
-    <div class="mobile-card-header">
-      <div><p class="eyebrow">Needs Attention</p><h2>Review first</h2></div>
-      <span class="status-pill ${attentionItems.length ? "negative" : "live"}">${attentionItems.length}</span>
+    <button class="mobile-collapse-toggle mobile-attention-toggle" data-action="toggleMobileAttention" type="button" aria-expanded="${state.mobileAttentionOpen}">
+      <span>
+        <em class="eyebrow">Needs Attention</em>
+        <strong>Review first</strong>
+      </span>
+      <span class="mobile-toggle-side">
+        ${attentionItems.length ? `<span class="alert-count mobile-count-badge">${number(attentionItems.length, 0)}</span>` : ""}
+        <span class="mobile-chevron">${state.mobileAttentionOpen ? "▴" : "▾"}</span>
+      </span>
+    </button>
+    <div class="mobile-collapsible-body" ${state.mobileAttentionOpen ? "" : "hidden"}>
+      ${attentionItems.length ? attentionItems.map((item) => `
+        <button class="mobile-action-row" data-view-jump="${escapeHtml(item.view)}" type="button">
+          <span>${escapeHtml(item.title)}</span>
+          <strong>${escapeHtml(item.issue)}</strong>
+          <em>${escapeHtml(item.severity)} | ${escapeHtml(item.action)}</em>
+        </button>
+      `).join("") : `<p class="muted">Nothing urgent from alerts, allocation, data quality, or Rules V2.</p>`}
     </div>
-    ${attentionItems.length ? attentionItems.map((item) => `
-      <button class="mobile-action-row" data-view-jump="${escapeHtml(item.view)}" type="button">
-        <span>${escapeHtml(item.title)}</span>
-        <strong>${escapeHtml(item.issue)}</strong>
-        <em>${escapeHtml(item.severity)} | ${escapeHtml(item.action)}</em>
-      </button>
-    `).join("") : `<p class="muted">Nothing urgent from alerts, allocation, data quality, or Rules V2.</p>`}
   `;
 
   $("#mobileOpportunities").innerHTML = `
@@ -4166,7 +4206,7 @@ function renderMobileHome() {
       <div><p class="eyebrow">Opportunities</p><h2>Highest ranked</h2></div>
       <button class="button secondary" data-view-jump="research" type="button">View all</button>
     </div>
-    ${opportunities.length ? opportunities.map((item) => `
+    ${opportunities.length ? opportunities.slice(0, 4).map((item) => `
       <button class="mobile-opportunity-row" data-open-stock="${escapeHtml(item.ticker)}" data-action="openStock" type="button">
         <span class="decision-pill ${String(item.status || "HOLD").toLowerCase()}">${escapeHtml(item.status || "HOLD")}</span>
         <strong>${escapeHtml(item.ticker)}</strong>
@@ -4176,20 +4216,8 @@ function renderMobileHome() {
     `).join("") : `<p class="muted">No buy/add candidate is currently eligible.</p>`}
   `;
 
-  $("#mobileAllocationCompact").innerHTML = `
-    <div class="mobile-card-header">
-      <div><p class="eyebrow">Allocation</p><h2>Concentration</h2></div>
-      <button class="button secondary" data-view-jump="portfolio" type="button">Holdings</button>
-    </div>
-    <div class="mobile-allocation-rows">
-      <div><span>Largest holding</span><strong>${largest ? `${largest.ticker} ${percent(positionExposure(largest))}` : "n/a"}</strong></div>
-      <div><span>Top 3</span><strong>${percent(summary.totalValueBase ? (top3 / summary.totalValueBase) * 100 : 0)}</strong></div>
-      <div><span>Top 5</span><strong>${percent(summary.totalValueBase ? (top5 / summary.totalValueBase) * 100 : 0)}</strong></div>
-      <div><span>Cash</span><strong>${percent(summary.totalValueBase ? ((summary.cashAvailableBase || 0) / summary.totalValueBase) * 100 : 0)}</strong></div>
-      <div><span>Largest theme</span><strong>${largestTheme ? `${largestTheme.name} ${percent(largestTheme.actualPercent || 0)}` : "n/a"}</strong></div>
-      <div><span>Main warning</span><strong>${allocationWarning ? `${allocationWarning.name} ${signedPercent(allocationWarning.variancePercent || 0)}` : "On target"}</strong></div>
-    </div>
-  `;
+  const compactAllocation = $("#mobileAllocationCompact");
+  if (compactAllocation) compactAllocation.innerHTML = "";
 }
 
 function renderMobileHoldings() {
@@ -4283,7 +4311,10 @@ function renderCash() {
   if (card) {
     card.classList.toggle("collapsed", state.cashCollapsed);
     const button = card.querySelector('[data-action="toggleCash"]');
-    if (button) button.textContent = state.cashCollapsed ? "Show" : "Hide";
+    if (button) {
+      button.textContent = state.cashCollapsed ? "Show" : "Hide";
+      button.setAttribute("aria-expanded", String(!state.cashCollapsed));
+    }
   }
   $("#cashSummary").textContent = `${money(totalCashBase, user.baseCurrency)} | ${cashBalances.length} currencies`;
   $("#cashBalances").innerHTML = cashBalances.length ? cashBalances.map((cash) => `
@@ -4636,6 +4667,55 @@ function alertSection(title, rows, emptyText) {
         <span>${rows.length}</span>
       </div>
       ${rows.length ? rows.map(alertCard).join("") : `<p class="muted">${escapeHtml(emptyText)}</p>`}
+    </section>
+  `;
+}
+
+function mobileAlertSection(title, rows, emptyText) {
+  const key = title.toLowerCase().split(" ")[0];
+  const grouped = new Map();
+  for (const alert of rows) {
+    const ticker = String(alert.ticker || "").toUpperCase();
+    if (!ticker) continue;
+    if (!grouped.has(ticker)) grouped.set(ticker, []);
+    grouped.get(ticker).push(alert);
+  }
+  const tickers = [...grouped.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  return `
+    <section class="alert-center-section mobile-alert-section" data-alert-section="${escapeHtml(key)}">
+      <div class="alert-section-head">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${rows.length}</span>
+      </div>
+      ${tickers.length ? tickers.map((ticker) => {
+        const list = grouped.get(ticker).slice().sort((a, b) => {
+          const pa = Number(a.threshold_price ?? a.targetPrice ?? 0);
+          const pb = Number(b.threshold_price ?? b.targetPrice ?? 0);
+          return pa - pb;
+        });
+        const position = (state.dashboard.positions || []).find((item) => String(item.ticker || "").toUpperCase() === ticker);
+        const first = list[0] || {};
+        const currentPrice = position?.price?.price != null
+          ? `${money(position.price.price, position.price.currency)}${extendedPriceHtml(position.price)}`
+          : first.currentPrice != null
+            ? money(first.currentPrice, first.currentCurrency || first.currency)
+            : "n/a";
+        const triggered = list.filter((alert) => alertStatus(alert).bucket === "triggered").length;
+        return `
+          <div class="portfolio-alert-row mobile-alert-ticker-card ${triggered ? "has-triggered" : ""}">
+            <div class="portfolio-alert-head">
+              ${tickerButton(ticker)}
+              <span class="portfolio-alert-price">${currentPrice}</span>
+            </div>
+            <div class="portfolio-alert-meta">
+              <span>${list.length} alert${list.length === 1 ? "" : "s"}</span>
+              ${triggered ? `<span class="status-pill negative">${triggered} triggered</span>` : `<span class="status-pill live">Active</span>`}
+            </div>
+            <div class="portfolio-alert-chips">${list.map(alertChip).join("")}</div>
+            <button class="button secondary portfolio-alert-add" data-open-alert="${escapeHtml(ticker)}" data-scope="EQUITY" type="button">+ Alert</button>
+          </div>
+        `;
+      }).join("") : `<p class="muted">${escapeHtml(emptyText)}</p>`}
     </section>
   `;
 }
@@ -5120,14 +5200,15 @@ function renderAlerts() {
       </button>
     `).join("");
   }
+  const sectionRenderer = isMobileView() ? mobileAlertSection : alertSection;
   const sectionHtml = currentTab === "all"
     ? [
-        alertSection("Triggered alerts", buckets.triggered, "No triggered alerts need review."),
-        alertSection("Active alerts", buckets.active, "No active alerts."),
-        alertSection("Acknowledged alerts", buckets.acknowledged, "Nothing reviewed yet."),
-        alertSection("Archived alerts", buckets.archived, "No archived alerts.")
+        sectionRenderer("Triggered alerts", buckets.triggered, "No triggered alerts need review."),
+        sectionRenderer("Active alerts", buckets.active, "No active alerts."),
+        sectionRenderer("Acknowledged alerts", buckets.acknowledged, "Nothing reviewed yet."),
+        sectionRenderer("Archived alerts", buckets.archived, "No archived alerts.")
       ].join("")
-    : alertSection(`${currentTab === "acknowledged" ? "Acknowledged" : currentTab[0].toUpperCase() + currentTab.slice(1)} alerts`, buckets[currentTab], `No ${currentTab} alerts.`);
+    : sectionRenderer(`${currentTab === "acknowledged" ? "Acknowledged" : currentTab[0].toUpperCase() + currentTab.slice(1)} alerts`, buckets[currentTab], `No ${currentTab} alerts.`);
   $("#alertsTable").innerHTML = `<div class="alert-center-grid">${sectionHtml}</div>`;
 }
 
@@ -5808,6 +5889,15 @@ function renderNewsIntelligence() {
 
 function renderDividends() {
   const { dividends, user } = state.dashboard;
+  const band = $("#dividendsBand");
+  if (band) {
+    band.classList.toggle("mobile-collapsed", !state.mobileDividendsOpen);
+    const button = band.querySelector('[data-action="toggleMobileDividends"]');
+    if (button) {
+      button.textContent = state.mobileDividendsOpen ? "Hide" : "Show";
+      button.setAttribute("aria-expanded", String(state.mobileDividendsOpen));
+    }
+  }
   $("#dividendCount").textContent = dividends?.length ? `${dividends.length} payments` : "";
   $("#dividendsTable").innerHTML = dividends?.length ? dividends.slice(0, 40).map((item) => {
     const detail = item.source === "netwealth" && (!item.eligibleQuantity || !item.amountPerShare)
@@ -5829,6 +5919,15 @@ function renderExternalTransactions() {
   const countNode = $("#externalTransactionCount");
   const tableNode = $("#externalTransactionsTable");
   if (!countNode || !tableNode) return;
+  const band = $("#externalTransactionsBand");
+  if (band) {
+    band.classList.toggle("mobile-collapsed", !state.mobileClosedTransactionsOpen);
+    const button = band.querySelector('[data-action="toggleMobileClosedTransactions"]');
+    if (button) {
+      button.textContent = state.mobileClosedTransactionsOpen ? "Hide" : "Show";
+      button.setAttribute("aria-expanded", String(state.mobileClosedTransactionsOpen));
+    }
+  }
   countNode.textContent = externalTransactions.length ? `${externalTransactions.length} saved` : "None saved";
   tableNode.innerHTML = externalTransactions.length ? externalTransactions.map((item) => {
     const gainClass = item.gainLossBase > 0 ? "positive" : item.gainLossBase < 0 ? "negative" : "";
@@ -7501,6 +7600,26 @@ document.addEventListener("click", async (event) => {
           if (node) node.scrollIntoView({ behavior: "smooth", block: "start" });
         });
       }
+      return;
+    }
+    if (action === "toggleMobileDetails") {
+      setPersistentFlag("mobileDetailsOpen", !state.mobileDetailsOpen);
+      renderMobileHome();
+      return;
+    }
+    if (action === "toggleMobileAttention") {
+      setPersistentFlag("mobileAttentionOpen", !state.mobileAttentionOpen);
+      renderMobileHome();
+      return;
+    }
+    if (action === "toggleMobileDividends") {
+      setPersistentFlag("mobileDividendsOpen", !state.mobileDividendsOpen);
+      renderDividends();
+      return;
+    }
+    if (action === "toggleMobileClosedTransactions") {
+      setPersistentFlag("mobileClosedTransactionsOpen", !state.mobileClosedTransactionsOpen);
+      renderExternalTransactions();
       return;
     }
     if (action === "refreshRulesV2") {

@@ -8,7 +8,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
     <link rel="apple-touch-icon" href="/favicon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=mobile-v1">
+    <link rel="stylesheet" href="/styles.css?v=mobile-2">
   </head>
   <body>
     <section class="auth-gate" id="authGate" hidden>
@@ -138,6 +138,7 @@
         <header class="app-header">
           <div>
             <p class="eyebrow">Investment Portfolio</p>
+            <img class="mobile-header-logo" src="/logo.png" alt="ApexFolio">
             <h1 id="mobileViewTitle">Command Center</h1>
           </div>
           <div class="header-actions">
@@ -184,6 +185,7 @@
             </div>
           </div>
           <div id="dashboardAllocationSummary" class="collapse-summary"></div>
+          <div id="mobileAllocationList" class="mobile-allocation-targets"></div>
           <div class="dashboard-allocation-layout">
             <div class="allocation-overview-panel">
               <div id="groupDonut" class="donut-layout"></div>
@@ -396,24 +398,28 @@
           </div>
         </section>
 
-        <section class="band">
+        <section class="band mobile-collapsible-band" id="dividendsBand">
           <div class="band-header">
             <h2>Dividends</h2>
             <div class="button-row">
               <span class="muted" id="dividendCount"></span>
+              <button class="button secondary" data-action="toggleMobileDividends" type="button">Show</button>
               <button class="button secondary" data-action="syncDividends" type="button">Check CSV Dividends</button>
             </div>
           </div>
           <div id="dividendsTable" class="compact-table"></div>
         </section>
 
-        <section class="band">
+        <section class="band mobile-collapsible-band" id="externalTransactionsBand">
           <div class="band-header">
             <div>
               <h2>Closed Broker Transactions</h2>
               <p class="muted">Past trades from other brokers stay in realized gains even when you no longer own the ticker.</p>
             </div>
-            <span class="muted" id="externalTransactionCount"></span>
+            <div class="button-row">
+              <span class="muted" id="externalTransactionCount"></span>
+              <button class="button secondary" data-action="toggleMobileClosedTransactions" type="button">Show</button>
+            </div>
           </div>
           <form class="closed-transaction-form" id="externalTransactionForm">
             <input name="ticker" placeholder="Ticker" required>
@@ -1418,6 +1424,6 @@
       </div>
     </dialog>
 
-    <script src="/app.js?v=mobile-v1" type="module"></script>
+    <script src="/app.js?v=mobile-2" type="module"></script>
   </body>
 </html>

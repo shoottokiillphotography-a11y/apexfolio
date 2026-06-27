@@ -5384,7 +5384,9 @@ tr.closed-position > td:first-child {
 .mobile-more-tab,
 .mobile-home,
 .mobile-holdings-list,
-.mobile-downloads-card {
+.mobile-downloads-card,
+.mobile-header-logo,
+.mobile-allocation-targets {
   display: none;
 }
 
@@ -5457,14 +5459,19 @@ tr.closed-position > td:first-child {
     border-bottom: 1px solid var(--hairline);
   }
 
+  .mobile-header-logo {
+    display: block;
+    width: auto;
+    height: 40px;
+    border-radius: 10px;
+  }
+
   .app-header .eyebrow {
-    margin-bottom: 5px;
-    font-size: 9px;
+    display: none;
   }
 
   .app-header h1 {
-    font-size: 30px;
-    line-height: 1;
+    display: none;
   }
 
   .app-header .header-actions {
@@ -5473,12 +5480,12 @@ tr.closed-position > td:first-child {
     gap: 8px;
   }
 
-  .app-header .header-actions > *:not(.field):not(#refreshPrices) {
+  .app-header .header-actions > *:not(.field):not(#refreshPrices):not(#refreshIntl) {
     display: none;
   }
 
   .app-header .header-actions .field {
-    max-width: 88px;
+    max-width: 78px;
   }
 
   .app-header .header-actions .field span {
@@ -5491,6 +5498,15 @@ tr.closed-position > td:first-child {
     font-size: 12px;
   }
 
+  .app-header .header-actions #refreshPrices,
+  .app-header .header-actions #refreshIntl {
+    width: 72px;
+    padding-inline: 8px;
+    white-space: normal;
+    line-height: 1.05;
+    text-align: center;
+  }
+
   .alert-banner {
     margin: 12px 14px 0;
   }
@@ -5501,6 +5517,8 @@ tr.closed-position > td:first-child {
   #dashboardAllocationTable,
   [data-performance-card="portfolio"],
   #allocationCard,
+  .allocation-target-panel,
+  .mobile-allocation,
   #holdingsTable,
   #holdingsHead,
   #holdingsBody,
@@ -5592,6 +5610,61 @@ tr.closed-position > td:first-child {
     color: var(--text);
     font-weight: 800;
     cursor: pointer;
+  }
+
+  .mobile-collapse-toggle {
+    width: 100%;
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    font: inherit;
+    font-weight: 900;
+    cursor: pointer;
+  }
+
+  .mobile-collapse-toggle .eyebrow {
+    display: block;
+    margin: 0 0 5px;
+    color: var(--muted);
+    font-style: normal;
+  }
+
+  .mobile-collapse-toggle strong {
+    display: block;
+    font-size: 19px;
+  }
+
+  .mobile-chevron {
+    display: inline-grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--accent);
+    background: var(--bg-2);
+  }
+
+  .mobile-toggle-side {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .mobile-count-badge {
+    min-width: 24px;
+    min-height: 22px;
+  }
+
+  .mobile-collapsible-body[hidden] {
+    display: none !important;
   }
 
   .mobile-metric-grid {
@@ -5691,6 +5764,46 @@ tr.closed-position > td:first-child {
     gap: 10px;
   }
 
+  .mobile-allocation-targets {
+    display: grid;
+    gap: 9px;
+    margin-top: 16px;
+  }
+
+  .dashboard-allocation-card.collapsed .mobile-allocation-targets {
+    display: none;
+  }
+
+  .mobile-allocation-target-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) minmax(88px, auto);
+    align-items: center;
+    gap: 10px;
+    padding: 11px 0;
+    border-top: 1px solid var(--hairline);
+  }
+
+  .mobile-allocation-target-row .swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+  }
+
+  .mobile-allocation-target-row strong,
+  .mobile-allocation-target-row small {
+    display: block;
+  }
+
+  .mobile-allocation-target-row small {
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .mobile-allocation-target-row .num {
+    text-align: right;
+  }
+
   .dashboard-allocation-layout,
   .dashboard-intelligence-grid,
   .dashboard-stack,
@@ -5722,13 +5835,32 @@ tr.closed-position > td:first-child {
   }
 
   .performance-chart-shell {
+    width: 100%;
+    max-width: 100%;
     min-height: 220px;
     overflow: hidden;
     touch-action: pan-y;
   }
 
   .performance-chart {
+    width: 100%;
+    max-width: 100%;
     min-height: 220px;
+    height: 220px;
+  }
+
+  .dashboard-performance-card .performance-metric-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-performance-card .performance-metric-strip .performance-stat {
+    min-width: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .dashboard-performance-card .performance-metric-strip .performance-stat:nth-child(odd) {
+    border-right: 1px solid var(--border);
   }
 
   .holdings-controls {
@@ -5828,6 +5960,41 @@ tr.closed-position > td:first-child {
     display: block;
   }
 
+  .view-panel[data-view-panel="portfolio"].active {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .view-panel[data-view-panel="portfolio"] .two-column {
+    order: 2;
+  }
+
+  #holdingsBand {
+    order: 1;
+  }
+
+  #cashCard {
+    order: 1;
+  }
+
+  #dividendsBand {
+    order: 3;
+  }
+
+  #externalTransactionsBand {
+    order: 4;
+  }
+
+  .mobile-downloads-card {
+    order: 5;
+  }
+
+  #dividendsBand.mobile-collapsed #dividendsTable,
+  #externalTransactionsBand.mobile-collapsed #externalTransactionForm,
+  #externalTransactionsBand.mobile-collapsed #externalTransactionsTable {
+    display: none;
+  }
+
   .mobile-download-actions {
     display: grid;
     gap: 10px;
@@ -5869,6 +6036,36 @@ tr.closed-position > td:first-child {
   .signal-card-row,
   .compact-row {
     border-radius: 16px;
+  }
+
+  .mobile-alert-section .portfolio-alert-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    background: var(--card);
+  }
+
+  .mobile-alert-section .portfolio-alert-row.has-triggered {
+    border-color: color-mix(in srgb, var(--danger) 52%, var(--border));
+    background: color-mix(in srgb, var(--danger) 10%, var(--card));
+  }
+
+  .portfolio-alert-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .mobile-alert-section .portfolio-alert-chips {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 2px;
   }
 
   .alert-tabs,
