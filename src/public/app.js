@@ -1,6 +1,6 @@
 import { ACTION_OPTIONS, alertTypeForAction, parseAlertCommand, validateParsedAlert } from "./alert-command-parser.js";
 
-const FRONTEND_BUILD = "2026-06-28-desktop-golden-cards";
+const FRONTEND_BUILD = "2026-06-28-desktop-golden-cards-v2";
 const DESKTOP_PANEL_STORAGE_PREFIX = "apexfolio.panel";
 
 function loadHoldingsView() {
@@ -361,6 +361,18 @@ function ensureDesktopPanelControls() {
     <button class="desktop-panel-control" data-action="expandAllDesktopPanels" type="button">Expand all</button>
   `;
   document.querySelector("main")?.prepend(controls);
+}
+
+function portfolioPerformanceChartOpen() {
+  return !state.dashboardChartCollapsed || !state.portfolioChartCollapsed;
+}
+
+function maybeLoadOpenPortfolioPerformance() {
+  if (state.portfolioPerformance || state.portfolioPerformanceLoading || !portfolioPerformanceChartOpen()) return;
+  window.setTimeout(() => {
+    if (state.portfolioPerformance || state.portfolioPerformanceLoading || !portfolioPerformanceChartOpen()) return;
+    loadPortfolioPerformance(state.portfolioPerformanceRange, { force: true }).catch(toastError);
+  }, 0);
 }
 
 const money = (value, currency) => value == null ? "n/a" : new Intl.NumberFormat(undefined, {
@@ -1360,6 +1372,7 @@ async function loadDashboard(refresh = false) {
     render();
     renderAccountState();
     if (!state.portfolioPerformance) renderPortfolioPerformance();
+    maybeLoadOpenPortfolioPerformance();
     if (state.currentView === "operations") loadRealizedIncome().catch(() => undefined);
     newsPromise.then((newsPayload) => {
       state.news = newsPayload;
@@ -1674,6 +1687,17 @@ function portfolioPerformanceForView(wealth = state.portfolioPerformance) {
   return verifiedPortfolioPerformance(wealth);
 }
 
+function applyPortfolioPerformanceFallback(wealth) {
+  const snapshotCount = (wealth?.actualPortfolioValue?.points || []).length;
+  const bookPointCount = (wealth?.bookValue?.points || []).length;
+  const bridgeItemCount = (wealth?.wealthBridge?.items || []).length;
+  if (state.portfolioPerformanceView !== "verified_value" || snapshotCount) return false;
+  if (!bookPointCount && !bridgeItemCount) return false;
+  state.portfolioPerformanceView = bookPointCount ? "capital_journey" : "wealth_bridge";
+  localStorage.setItem("portfolioPerformanceView", state.portfolioPerformanceView);
+  return true;
+}
+
 function performanceRequestTimeout(ms = 12000) {
   return new Promise((_, reject) => {
     setTimeout(() => reject(new Error("Performance data took too long to load. The rest of the app is still usable.")), ms);
@@ -1796,6 +1820,7 @@ async function loadPortfolioPerformance(range = state.portfolioPerformanceRange,
       performanceRequestTimeout()
     ]);
     state.portfolioPerformance.requestedRange = range;
+    applyPortfolioPerformanceFallback(state.portfolioPerformance);
   } catch (error) {
     state.portfolioPerformance = {
       requestedRange: range,
