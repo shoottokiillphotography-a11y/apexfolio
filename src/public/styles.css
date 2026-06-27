@@ -28,6 +28,9 @@
   --accent: #CBAE70;
   --accent-rgb: 203, 174, 112;
   --accent-soft: rgba(203, 174, 112, 0.12);
+  --gold-card-bg: linear-gradient(180deg, color-mix(in srgb, var(--card-elevated) 92%, var(--accent) 8%), var(--card));
+  --gold-card-border: color-mix(in srgb, var(--accent) 26%, var(--border));
+  --gold-card-ring: 0 0 0 1px rgba(var(--accent-rgb), 0.02);
   --success: #22C55E;
   --success-rgb: 34, 197, 94;
   --warning: #E8A23A;
@@ -649,16 +652,24 @@ main {
   box-shadow: none;
 }
 
+.desktop-golden-panel,
+.metric-tile,
+.chart-card,
+.holding-card,
+.settings-card {
+  background: var(--gold-card-bg);
+  border-color: var(--gold-card-border);
+  box-shadow: var(--gold-card-ring);
+}
+
 .metric-tile {
   min-height: 88px;
-  padding: 16px 16px 14px 0;
+  padding: 16px;
   display: grid;
   align-content: start;
   gap: 10px;
-  background: transparent;
-  border: none;
-  border-top: 1px solid var(--hairline);
-  border-radius: 0;
+  border: 1px solid var(--gold-card-border);
+  border-radius: 18px;
   transition: border-color 160ms ease, transform 160ms ease;
 }
 
@@ -678,8 +689,7 @@ main {
 
 .metric-tile:first-child {
   grid-column: 1 / -1;
-  background: transparent;
-  border-top: 2px solid var(--accent);
+  border-top: 1px solid color-mix(in srgb, var(--accent) 52%, var(--border));
   padding: 22px 0 18px;
   margin-bottom: 6px;
   gap: 14px;
@@ -966,6 +976,128 @@ main {
   justify-content: space-between;
   gap: 18px;
   margin-bottom: 16px;
+}
+
+.desktop-panel-title-toggle {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.desktop-panel-title-toggle > div,
+.desktop-panel-title-toggle > h2,
+.desktop-panel-title-toggle > span {
+  min-width: 0;
+}
+
+.desktop-panel-title-toggle:hover h2,
+.desktop-panel-title-toggle:focus-visible h2 {
+  color: var(--accent);
+}
+
+.desktop-panel-title-toggle:focus-visible,
+.desktop-panel-collapse-button:focus-visible,
+.desktop-panel-control:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.58);
+  outline-offset: 4px;
+}
+
+.desktop-panel-chevron,
+.desktop-panel-collapse-button {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--gold-card-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-2) 88%, var(--accent) 12%);
+  color: var(--accent);
+  transition: transform 170ms ease, border-color 170ms ease, background 170ms ease;
+}
+
+.desktop-panel-collapse-button {
+  display: none;
+  cursor: pointer;
+}
+
+.desktop-panel-collapsed .desktop-panel-chevron,
+.desktop-panel-collapsed .desktop-panel-collapse-button {
+  transform: rotate(-90deg);
+}
+
+.desktop-panel-controls {
+  display: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0 0 18px;
+}
+
+.desktop-panel-control {
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--gold-card-border);
+  border-radius: 999px;
+  background: var(--gold-card-bg);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+@media (min-width: 761px) {
+  .desktop-panel-controls {
+    display: flex;
+  }
+
+  .desktop-panel-collapse-button {
+    display: inline-grid;
+  }
+
+  .desktop-golden-panel {
+    border-radius: 18px;
+    background: var(--gold-card-bg);
+    border-color: var(--gold-card-border);
+  }
+
+  .desktop-collapsible-panel.desktop-panel-collapsed > :not(.band-header) {
+    display: none !important;
+  }
+
+  .desktop-collapsible-panel.desktop-panel-collapsed {
+    padding-bottom: clamp(20px, 2.4vw, 32px);
+  }
+
+  .desktop-collapsible-panel .band-header {
+    margin-bottom: 18px;
+  }
+
+  .desktop-collapsible-panel.desktop-panel-collapsed .band-header {
+    margin-bottom: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .desktop-panel-title-toggle {
+    pointer-events: none;
+  }
+
+  .desktop-panel-chevron,
+  .desktop-panel-collapse-button,
+  .desktop-panel-controls {
+    display: none !important;
+  }
 }
 
 .two-column {
@@ -5545,7 +5677,7 @@ tr.closed-position > td:first-child {
   .mobile-more-card {
     border: 1px solid var(--border);
     border-radius: 18px;
-    background: linear-gradient(180deg, color-mix(in srgb, var(--card-elevated) 92%, var(--accent) 8%), var(--card));
+    background: var(--gold-card-bg);
   }
 
   .mobile-hero {

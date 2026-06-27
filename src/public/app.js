@@ -1,5 +1,8 @@
 import { ACTION_OPTIONS, alertTypeForAction, parseAlertCommand, validateParsedAlert } from "./alert-command-parser.js";
 
+const FRONTEND_BUILD = "2026-06-28-desktop-golden-cards";
+const DESKTOP_PANEL_STORAGE_PREFIX = "apexfolio.panel";
+
 function loadHoldingsView() {
   try {
     return JSON.parse(localStorage.getItem("holdingsView") || "{}");
@@ -270,6 +273,94 @@ const $ = (selector) => document.querySelector(selector);
 function setPersistentFlag(key, value) {
   state[key] = Boolean(value);
   localStorage.setItem(key, String(state[key]));
+}
+
+function slugifyPanelId(value) {
+  return String(value || "panel")
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 56) || "panel";
+}
+
+function panelStorageKey(panelId) {
+  return `${DESKTOP_PANEL_STORAGE_PREFIX}.${panelId}.collapsed`;
+}
+
+function panelTitle(panel) {
+  const directHeader = panel.querySelector(":scope > .band-header");
+  const titleNode = directHeader?.querySelector("h2, strong, .section-title")
+    || panel.querySelector(":scope > details > summary strong")
+    || panel.querySelector(":scope > h2, :scope > .section-title");
+  return titleNode?.textContent?.trim() || panel.id || "Panel";
+}
+
+function desktopPanelId(panel, index) {
+  if (panel.dataset.desktopPanelId) return panel.dataset.desktopPanelId;
+  const view = panel.closest("[data-view-panel]")?.dataset.viewPanel || "workspace";
+  const source = panel.id || panel.dataset.performanceCard || panelTitle(panel);
+  return `${view}-${slugifyPanelId(source)}-${index}`;
+}
+
+function setDesktopPanelCollapsed(panel, collapsed) {
+  const panelId = panel.dataset.desktopPanelId;
+  panel.classList.toggle("desktop-panel-collapsed", collapsed);
+  const toggle = panel.querySelector(":scope > .band-header .desktop-panel-title-toggle, :scope > .band-header .desktop-panel-collapse-button");
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${panelTitle(panel)}`);
+  }
+  localStorage.setItem(panelStorageKey(panelId), String(collapsed));
+}
+
+function enhanceDesktopPanels() {
+  const panels = [...document.querySelectorAll("[data-view-panel] .band")];
+  panels.forEach((panel, index) => {
+    if (panel.closest("dialog")) return;
+    const panelId = desktopPanelId(panel, index);
+    panel.dataset.desktopPanelId = panelId;
+    panel.classList.add("desktop-golden-panel", "desktop-collapsible-panel");
+
+    let header = panel.querySelector(":scope > .band-header");
+    if (!header) {
+      header = document.createElement("div");
+      header.className = "band-header desktop-generated-header";
+      header.innerHTML = `<div><h2>${escapeHtml(panelTitle(panel))}</h2></div>`;
+      panel.prepend(header);
+    }
+
+    if (!header.querySelector(":scope > .desktop-panel-collapse-button")) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "desktop-panel-collapse-button";
+      toggle.dataset.action = "toggleDesktopPanel";
+      toggle.dataset.panelId = panelId;
+      toggle.textContent = "⌄";
+      header.append(toggle);
+    }
+
+    const collapsed = localStorage.getItem(panelStorageKey(panelId)) === "true";
+    setDesktopPanelCollapsed(panel, collapsed);
+  });
+}
+
+function setAllDesktopPanelsCollapsed(collapsed) {
+  document.querySelectorAll(".desktop-collapsible-panel").forEach((panel) => {
+    setDesktopPanelCollapsed(panel, collapsed);
+  });
+}
+
+function ensureDesktopPanelControls() {
+  if (document.querySelector(".desktop-panel-controls")) return;
+  const controls = document.createElement("div");
+  controls.className = "desktop-panel-controls";
+  controls.innerHTML = `
+    <button class="desktop-panel-control" data-action="collapseAllDesktopPanels" type="button">Collapse all</button>
+    <button class="desktop-panel-control" data-action="expandAllDesktopPanels" type="button">Expand all</button>
+  `;
+  document.querySelector("main")?.prepend(controls);
 }
 
 const money = (value, currency) => value == null ? "n/a" : new Intl.NumberFormat(undefined, {
@@ -6894,6 +6985,8 @@ function render() {
   renderEvents();
   renderNotifications();
   renderWarnings();
+  ensureDesktopPanelControls();
+  enhanceDesktopPanels();
   setView(state.currentView, { scroll: false, routeTab: state.routeTab, alertTab: state.alertTab });
 }
 
@@ -7555,6 +7648,15 @@ document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest?.(".symbol-field")) hideWatchlistSymbolResults();
 });
 
+document.addEventListener("click", (event) => {
+  if (isMobileView()) return;
+  const header = event.target.closest(".desktop-collapsible-panel > .band-header");
+  if (!header) return;
+  if (event.target.closest("button, a, input, select, textarea, label, summary, form, [role='button']")) return;
+  const panel = header.closest(".desktop-collapsible-panel");
+  if (panel) setDesktopPanelCollapsed(panel, !panel.classList.contains("desktop-panel-collapsed"));
+});
+
 document.addEventListener("click", async (event) => {
   const target = event.target.closest("button, [role='button'][data-action]");
   if (!target) return;
@@ -7600,6 +7702,19 @@ document.addEventListener("click", async (event) => {
           if (node) node.scrollIntoView({ behavior: "smooth", block: "start" });
         });
       }
+      return;
+    }
+    if (action === "toggleDesktopPanel") {
+      const panel = target.closest(".desktop-collapsible-panel");
+      if (panel) setDesktopPanelCollapsed(panel, !panel.classList.contains("desktop-panel-collapsed"));
+      return;
+    }
+    if (action === "collapseAllDesktopPanels") {
+      setAllDesktopPanelsCollapsed(true);
+      return;
+    }
+    if (action === "expandAllDesktopPanels") {
+      setAllDesktopPanelsCollapsed(false);
       return;
     }
     if (action === "toggleMobileDetails") {
