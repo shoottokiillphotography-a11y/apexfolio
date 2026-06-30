@@ -18,6 +18,11 @@ import { convertAmount } from "./currency.js";
 
 export const NETWEALTH_KIND = "netwealth_transactions";
 const NETWEALTH_CURRENCY = "AUD";
+const NETWEALTH_AUTO_CASH_CODES = new Map([
+  ["FXUSD", "USD"],
+  ["FXDKK", "DKK"]
+]);
+const NETWEALTH_MANUAL_CASH_CODES = new Set(["FXGBP3", "FXGBP"]);
 
 function clean(value) {
   return String(value ?? "").replace(/^\uFEFF/, "").trim();
@@ -74,6 +79,20 @@ function parseNetwealthDate(value) {
   return `${match[3]}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}`;
 }
 
+function reportDate(matrix, label) {
+  const key = normalized(label);
+  for (const row of matrix) {
+    if (normalized(row[0]) === key) return parseNetwealthDate(row[1]);
+  }
+  return null;
+}
+
+function isFullHistoryReport(matrix, filename = "") {
+  if (String(filename || "").includes("_19000101_")) return true;
+  const startDate = reportDate(matrix, "Start date");
+  return Boolean(startDate && startDate <= "1901-01-01");
+}
+
 function sourceEventId(row, kind, suffix = "") {
   const fingerprint = [
     kind,
@@ -95,6 +114,12 @@ function sourceEventId(row, kind, suffix = "") {
 
 function isFxCode(code) {
   return normalizeTicker(code).startsWith("FX");
+}
+
+function autoCashCurrency(row) {
+  const code = normalizeTicker(row.code);
+  if (NETWEALTH_MANUAL_CASH_CODES.has(code)) return null;
+  return NETWEALTH_AUTO_CASH_CODES.get(code) || null;
 }
 
 function tickerCandidates(code) {
@@ -190,14 +215,110 @@ function extractCashBalance(matrix) {
   return null;
 }
 
+function setCashBalance(database, userId, currency, amount) {
+  if (amount == null || !Number.isFinite(Number(amount))) return false;
+  database.prepare(`
+    INSERT INTO cash_balances (id, user_id, currency, amount, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, currency) DO UPDATE SET amount = excluded.amount, updated_at = excluded.updated_at
+  `).run(id("cash"), userId, currency, roundMoney(Number(amount)), nowIso());
+  return true;
+}
+
+function addCashBalanceDelta(database, userId, currency, amount) {
+  if (amount == null || !Number.isFinite(Number(amount)) || Math.abs(Number(amount)) < 0.000001) return false;
+  const now = nowIso();
+  database.prepare(`
+    INSERT INTO cash_balances (id, user_id, currency, amount, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, currency) DO UPDATE SET
+      amount = round(cash_balances.amount + excluded.amount, 8),
+      updated_at = excluded.updated_at
+  `).run(id("cash"), userId, currency, Number(amount), now);
+  return true;
+}
+
+function insertCashBalanceEvent(database, userId, row, currency) {
+  const eventId = sourceEventId(row, `cash:${currency}`);
+  const now = nowIso();
+  const result = database.prepare(`
+    INSERT OR IGNORE INTO cash_balance_events (
+      id, user_id, currency, amount, event_date, source, source_event_id,
+      description, payload_json, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, 'netwealth', ?, ?, ?, ?)
+  `).run(
+    id("cash_event"),
+    userId,
+    currency,
+    roundShares(row.units),
+    row.date,
+    eventId,
+    row.description || row.asset || row.code || "Netwealth cash movement",
+    JSON.stringify(row.raw),
+    now
+  );
+  return { inserted: Boolean(result.changes), eventId };
+}
+
+function syncForeignCashBalances(database, userId, matrix, rows, filename) {
+  const cashRows = chronological(rows).filter((row) => autoCashCurrency(row));
+  const stats = {
+    cashFxEventsCreated: 0,
+    cashFxEventsMatched: 0,
+    cashFxBalancesUpdated: 0,
+    cashFxFullHistory: false
+  };
+  if (!cashRows.length) return stats;
+
+  if (isFullHistoryReport(matrix, filename)) {
+    stats.cashFxFullHistory = true;
+    const totals = new Map([...NETWEALTH_AUTO_CASH_CODES.values()].map((currency) => [currency, 0]));
+    for (const row of cashRows) {
+      const currency = autoCashCurrency(row);
+      totals.set(currency, roundShares((totals.get(currency) || 0) + row.units));
+    }
+    transaction((tx) => {
+      for (const currency of totals.keys()) {
+        tx.prepare(`
+          DELETE FROM cash_balance_events
+          WHERE user_id = ? AND source = 'netwealth' AND currency = ?
+        `).run(userId, currency);
+      }
+      for (const row of cashRows) {
+        const currency = autoCashCurrency(row);
+        if (insertCashBalanceEvent(tx, userId, row, currency).inserted) stats.cashFxEventsCreated += 1;
+      }
+      for (const [currency, amount] of totals.entries()) {
+        if (setCashBalance(tx, userId, currency, amount)) stats.cashFxBalancesUpdated += 1;
+      }
+    });
+    return stats;
+  }
+
+  transaction((tx) => {
+    for (const row of cashRows) {
+      const currency = autoCashCurrency(row);
+      const result = insertCashBalanceEvent(tx, userId, row, currency);
+      if (result.inserted) {
+        stats.cashFxEventsCreated += 1;
+        if (addCashBalanceDelta(tx, userId, currency, row.units)) stats.cashFxBalancesUpdated += 1;
+      } else {
+        stats.cashFxEventsMatched += 1;
+      }
+    }
+  });
+  return stats;
+}
+
 function insertedBatch(database, userId, filename, rows, stats, errors) {
   const batch = {
     id: id("import"),
     kind: NETWEALTH_KIND,
     filename,
     totalRows: rows.length,
-    createdCount: stats.purchasesCreated + stats.salesCreated + stats.dividendsCreated + stats.cashBalancesUpdated,
-    updatedCount: stats.purchasesMatched + stats.salesMatched + stats.dividendsUpdated + stats.dividendApiRowsRemoved,
+    createdCount: stats.purchasesCreated + stats.salesCreated + stats.dividendsCreated + stats.cashBalancesUpdated + stats.cashFxEventsCreated,
+    updatedCount: stats.purchasesMatched + stats.salesMatched + stats.dividendsUpdated + stats.dividendApiRowsRemoved + stats.cashFxEventsMatched,
     errorCount: errors.length,
     errors,
     details: stats
@@ -228,7 +349,8 @@ function resetImportedHistory(database, userId) {
     tx.prepare("DELETE FROM realized_lots WHERE user_id = ?").run(userId);
     tx.prepare("DELETE FROM dividend_payments WHERE user_id = ?").run(userId);
     tx.prepare("DELETE FROM holding_lots WHERE user_id = ?").run(userId);
-    tx.prepare("DELETE FROM cash_balances WHERE user_id = ?").run(userId);
+    tx.prepare("DELETE FROM cash_balance_events WHERE user_id = ?").run(userId);
+    tx.prepare("DELETE FROM cash_balances WHERE user_id = ? AND currency <> 'GBP'").run(userId);
   });
 }
 
@@ -600,13 +722,7 @@ async function insertDistribution(database, user, row) {
 }
 
 function updateCashBalance(database, userId, amount) {
-  if (amount == null) return false;
-  database.prepare(`
-    INSERT INTO cash_balances (id, user_id, currency, amount, updated_at)
-    VALUES (?, ?, 'AUD', ?, ?)
-    ON CONFLICT(user_id, currency) DO UPDATE SET amount = excluded.amount, updated_at = excluded.updated_at
-  `).run(id("cash"), userId, amount, nowIso());
-  return true;
+  return setCashBalance(database, userId, "AUD", amount);
 }
 
 export function previewNetwealthImport(filename, matrix) {
@@ -651,8 +767,10 @@ export async function importNetwealthTransactions({ userId, filename, matrix, re
   stats.dividendApiRowsRemoved = removeNonCsvDividendRows(database, userId);
   const cashBalance = extractCashBalance(matrix);
   if (updateCashBalance(database, userId, cashBalance)) stats.cashBalancesUpdated += 1;
+  Object.assign(stats, syncForeignCashBalances(database, userId, matrix, rows, filename));
 
   for (const row of chronological(rows)) {
+    if (autoCashCurrency(row)) continue;
     const type = classify(row);
     try {
       if (type === "purchase") {

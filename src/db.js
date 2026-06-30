@@ -149,6 +149,23 @@ function migrate(database) {
       UNIQUE(user_id, currency)
     );
 
+    CREATE TABLE IF NOT EXISTS cash_balance_events (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      currency TEXT NOT NULL,
+      amount REAL NOT NULL,
+      event_date TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_event_id TEXT NOT NULL,
+      description TEXT,
+      payload_json TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(user_id, source, source_event_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cash_balance_events_user_currency
+      ON cash_balance_events(user_id, currency, event_date);
+
     CREATE TABLE IF NOT EXISTS market_prices (
       ticker TEXT PRIMARY KEY,
       price REAL,
@@ -565,6 +582,9 @@ function migrate(database) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_realized_lots_source_event
       ON realized_lots(user_id, source, source_event_id)
       WHERE source_event_id IS NOT NULL;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_balance_events_source_event
+      ON cash_balance_events(user_id, source, source_event_id);
   `);
 }
 
