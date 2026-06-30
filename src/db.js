@@ -166,6 +166,16 @@ function migrate(database) {
     CREATE INDEX IF NOT EXISTS idx_cash_balance_events_user_currency
       ON cash_balance_events(user_id, currency, event_date);
 
+    CREATE TABLE IF NOT EXISTS cash_balance_sync_state (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      currency TEXT NOT NULL,
+      source TEXT NOT NULL,
+      last_report_end_date TEXT,
+      last_import_filename TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, currency, source)
+    );
+
     CREATE TABLE IF NOT EXISTS market_prices (
       ticker TEXT PRIMARY KEY,
       price REAL,

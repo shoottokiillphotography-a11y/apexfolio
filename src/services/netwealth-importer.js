@@ -87,6 +87,21 @@ function reportDate(matrix, label) {
   return null;
 }
 
+function reportEndDate(matrix, rows, filename = "") {
+  const fromReport = reportDate(matrix, "End date");
+  if (fromReport) return fromReport;
+  const fromFilename = parseNetwealthFilenameRange(filename)?.endDate;
+  if (fromFilename) return fromFilename;
+  return rows.reduce((latest, row) => (!latest || row.date > latest ? row.date : latest), null);
+}
+
+function parseNetwealthFilenameRange(filename = "") {
+  const match = /_(\d{8})_(\d{8})(?:\.csv)?$/i.exec(String(filename || ""));
+  if (!match) return null;
+  const parse = (value) => `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+  return { startDate: parse(match[1]), endDate: parse(match[2]) };
+}
+
 function isFullHistoryReport(matrix, filename = "") {
   if (String(filename || "").includes("_19000101_")) return true;
   const startDate = reportDate(matrix, "Start date");
@@ -238,6 +253,52 @@ function addCashBalanceDelta(database, userId, currency, amount) {
   return true;
 }
 
+function cashSyncState(database, userId, currency) {
+  return database.prepare(`
+    SELECT last_report_end_date AS lastReportEndDate
+    FROM cash_balance_sync_state
+    WHERE user_id = ? AND currency = ? AND source = 'netwealth'
+  `).get(userId, currency);
+}
+
+function updateCashSyncState(database, userId, currency, reportEnd, filename) {
+  if (!reportEnd) return;
+  database.prepare(`
+    INSERT INTO cash_balance_sync_state (
+      user_id, currency, source, last_report_end_date, last_import_filename, updated_at
+    )
+    VALUES (?, ?, 'netwealth', ?, ?, ?)
+    ON CONFLICT(user_id, currency, source) DO UPDATE SET
+      last_report_end_date = CASE
+        WHEN excluded.last_report_end_date > COALESCE(cash_balance_sync_state.last_report_end_date, '')
+          THEN excluded.last_report_end_date
+        ELSE cash_balance_sync_state.last_report_end_date
+      END,
+      last_import_filename = excluded.last_import_filename,
+      updated_at = excluded.updated_at
+  `).run(userId, currency, reportEnd, filename || null, nowIso());
+}
+
+function latestImportedReportEndDate(database, userId, currentFilename, currentReportEnd) {
+  const batches = database.prepare(`
+    SELECT filename
+    FROM import_batches
+    WHERE user_id = ? AND kind = ?
+      AND filename <> ?
+    ORDER BY created_at DESC
+    LIMIT 50
+  `).all(userId, NETWEALTH_KIND, currentFilename || "");
+
+  let latest = null;
+  for (const batch of batches) {
+    const range = parseNetwealthFilenameRange(batch.filename);
+    if (!range?.endDate) continue;
+    if (currentReportEnd && range.endDate > currentReportEnd) continue;
+    if (!latest || range.endDate > latest) latest = range.endDate;
+  }
+  return latest;
+}
+
 function insertCashBalanceEvent(database, userId, row, currency) {
   const eventId = sourceEventId(row, `cash:${currency}`);
   const now = nowIso();
@@ -267,9 +328,15 @@ function syncForeignCashBalances(database, userId, matrix, rows, filename) {
     cashFxEventsCreated: 0,
     cashFxEventsMatched: 0,
     cashFxBalancesUpdated: 0,
+    cashFxRowsSkippedAsOverlap: 0,
+    cashFxLastReportEndDate: null,
+    cashFxReportEndDate: null,
     cashFxFullHistory: false
   };
   if (!cashRows.length) return stats;
+
+  const endDate = reportEndDate(matrix, rows, filename);
+  stats.cashFxReportEndDate = endDate;
 
   if (isFullHistoryReport(matrix, filename)) {
     stats.cashFxFullHistory = true;
@@ -291,9 +358,24 @@ function syncForeignCashBalances(database, userId, matrix, rows, filename) {
       }
       for (const [currency, amount] of totals.entries()) {
         if (setCashBalance(tx, userId, currency, amount)) stats.cashFxBalancesUpdated += 1;
+        updateCashSyncState(tx, userId, currency, endDate, filename);
       }
     });
     return stats;
+  }
+
+  const fallbackLastEnd = latestImportedReportEndDate(database, userId, filename, endDate);
+  const stateByCurrency = new Map();
+  for (const currency of new Set(cashRows.map((row) => autoCashCurrency(row)))) {
+    const state = cashSyncState(database, userId, currency);
+    const lastEnd = state?.lastReportEndDate || fallbackLastEnd;
+    stateByCurrency.set(currency, {
+      lastEnd,
+      bootstrappedFromImportHistory: !state?.lastReportEndDate && Boolean(fallbackLastEnd)
+    });
+    if (lastEnd && (!stats.cashFxLastReportEndDate || lastEnd > stats.cashFxLastReportEndDate)) {
+      stats.cashFxLastReportEndDate = lastEnd;
+    }
   }
 
   transaction((tx) => {
@@ -302,10 +384,21 @@ function syncForeignCashBalances(database, userId, matrix, rows, filename) {
       const result = insertCashBalanceEvent(tx, userId, row, currency);
       if (result.inserted) {
         stats.cashFxEventsCreated += 1;
-        if (addCashBalanceDelta(tx, userId, currency, row.units)) stats.cashFxBalancesUpdated += 1;
+        const state = stateByCurrency.get(currency);
+        const alreadyCoveredByOlderImport = state?.bootstrappedFromImportHistory
+          && state.lastEnd
+          && row.date <= state.lastEnd;
+        if (alreadyCoveredByOlderImport) {
+          stats.cashFxRowsSkippedAsOverlap += 1;
+        } else if (addCashBalanceDelta(tx, userId, currency, row.units)) {
+          stats.cashFxBalancesUpdated += 1;
+        }
       } else {
         stats.cashFxEventsMatched += 1;
       }
+    }
+    for (const currency of stateByCurrency.keys()) {
+      updateCashSyncState(tx, userId, currency, endDate, filename);
     }
   });
   return stats;
@@ -350,6 +443,7 @@ function resetImportedHistory(database, userId) {
     tx.prepare("DELETE FROM dividend_payments WHERE user_id = ?").run(userId);
     tx.prepare("DELETE FROM holding_lots WHERE user_id = ?").run(userId);
     tx.prepare("DELETE FROM cash_balance_events WHERE user_id = ?").run(userId);
+    tx.prepare("DELETE FROM cash_balance_sync_state WHERE user_id = ? AND source = 'netwealth'").run(userId);
     tx.prepare("DELETE FROM cash_balances WHERE user_id = ? AND currency <> 'GBP'").run(userId);
   });
 }
