@@ -7084,6 +7084,7 @@ function openLotDialog({ ticker = "", categoryId = "", quantity = "", purchasePr
   const dialog = $("#lotDialog");
   const form = $("#lotForm");
   form.elements.ticker.value = ticker;
+  hideSymbolResults(form.elements.ticker);
   form.elements.categoryId.innerHTML = categoryOptions(categoryId);
   form.elements.quantity.value = quantity;
   form.elements.purchasePrice.value = purchasePrice;
@@ -7390,6 +7391,7 @@ document.addEventListener("submit", async (event) => {
     if (form.id === "lotForm" && event.submitter?.value !== "cancel") {
       await submitJson("/api/lots", Object.fromEntries(new FormData(form)));
       $("#lotDialog").close();
+      hideSymbolResults(form.elements.ticker);
       toast("Lot added");
       form.reset();
     }
@@ -7430,53 +7432,90 @@ document.addEventListener("submit", async (event) => {
   }
 });
 
-let watchlistSearchTimer = null;
-let watchlistSearchSeq = 0;
+const symbolAutocompleteTargets = {
+  watchlistTickerInput: { results: "#watchlistSymbolResults", currency: "#watchlistCurrency" },
+  lotTickerInput: { results: "#lotSymbolResults", currencyName: "purchaseCurrency" }
+};
+const symbolSearchTimers = {};
+let symbolSearchSeq = 0;
 
-async function renderWatchlistSymbolResults(query) {
-  const box = $("#watchlistSymbolResults");
-  if (!box) return;
-  const q = String(query || "").trim();
+function symbolAutocompleteConfig(input) {
+  return input ? symbolAutocompleteTargets[input.id] || null : null;
+}
+
+function symbolResultsBox(input) {
+  const config = symbolAutocompleteConfig(input);
+  return config ? $(config.results) : null;
+}
+
+async function renderSymbolResults(input) {
+  const box = symbolResultsBox(input);
+  if (!box || !input) return;
+  const q = String(input.value || "").trim();
   if (q.length < 1) {
-    box.hidden = true;
-    box.innerHTML = "";
+    hideSymbolResults(input);
     return;
   }
-  const seq = ++watchlistSearchSeq;
+  const seq = ++symbolSearchSeq;
+  input.dataset.symbolSearchSeq = String(seq);
   try {
     const data = await api(`/api/symbols/search?q=${encodeURIComponent(q)}`);
-    if (seq !== watchlistSearchSeq) return;
+    if (input.dataset.symbolSearchSeq !== String(seq)) return;
     const results = data.results || [];
     if (!results.length) {
-      box.hidden = true;
-      box.innerHTML = "";
+      hideSymbolResults(input);
       return;
     }
     box.innerHTML = results.map((r) => `
-      <button type="button" class="symbol-option" data-symbol-pick="${escapeHtml(r.symbol)}" data-symbol-currency="${escapeHtml(r.currency)}">
+      <button type="button" class="symbol-option" data-symbol-pick="${escapeHtml(r.symbol)}" data-symbol-target="${escapeHtml(input.id)}" data-symbol-currency="${escapeHtml(r.currency)}">
         <span class="symbol-option-code">${escapeHtml(r.symbol)}</span>
         <span class="symbol-option-name">${escapeHtml(r.name)}</span>
         <span class="symbol-option-exch">${escapeHtml(r.exchange)}${r.currency ? ` &middot; ${escapeHtml(r.currency)}` : ""}</span>
       </button>
     `).join("");
     box.hidden = false;
+    input.setAttribute("aria-expanded", "true");
   } catch {
-    box.hidden = true;
-    box.innerHTML = "";
+    hideSymbolResults(input);
   }
 }
 
-function scheduleWatchlistSymbolSearch(query) {
-  clearTimeout(watchlistSearchTimer);
-  watchlistSearchTimer = setTimeout(() => renderWatchlistSymbolResults(query), 220);
+function scheduleSymbolSearch(input) {
+  if (!symbolAutocompleteConfig(input)) return;
+  clearTimeout(symbolSearchTimers[input.id]);
+  symbolSearchTimers[input.id] = setTimeout(() => renderSymbolResults(input), 220);
 }
 
-function hideWatchlistSymbolResults() {
-  const box = $("#watchlistSymbolResults");
+function hideSymbolResults(inputOrId) {
+  const input = typeof inputOrId === "string" ? document.getElementById(inputOrId) : inputOrId;
+  const box = symbolResultsBox(input);
   if (box) {
     box.hidden = true;
     box.innerHTML = "";
   }
+  if (input) input.setAttribute("aria-expanded", "false");
+}
+
+function hideAllSymbolResults() {
+  Object.keys(symbolAutocompleteTargets).forEach(hideSymbolResults);
+}
+
+function applySymbolPick(button) {
+  const input = document.getElementById(button.dataset.symbolTarget || "watchlistTickerInput");
+  if (!input) return;
+  input.value = button.dataset.symbolPick || "";
+  const config = symbolAutocompleteConfig(input);
+  const currency = button.dataset.symbolCurrency;
+  const currencySelect = config?.currency
+    ? $(config.currency)
+    : config?.currencyName
+      ? input.closest("form")?.elements?.[config.currencyName]
+      : null;
+  if (currency && currencySelect && [...currencySelect.options].some((option) => option.value === currency)) {
+    currencySelect.value = currency;
+  }
+  hideSymbolResults(input);
+  input.focus();
 }
 
 document.addEventListener("input", (event) => {
@@ -7491,8 +7530,8 @@ document.addEventListener("input", (event) => {
     updateGroupManagerSummary();
     return;
   }
-  if (target.id === "watchlistTickerInput") {
-    scheduleWatchlistSymbolSearch(target.value);
+  if (symbolAutocompleteConfig(target)) {
+    scheduleSymbolSearch(target);
     return;
   }
   if (target.id === "mobileHoldingsSearch") {
@@ -7510,6 +7549,9 @@ document.addEventListener("input", (event) => {
 
 document.addEventListener("focusin", (event) => {
   const target = event.target;
+  if (symbolAutocompleteConfig(target)) {
+    renderSymbolResults(target);
+  }
   if (target.name === "symbol" && target.closest("#marketPulseForm")) {
     renderMarketPulseAutocomplete(target);
   }
@@ -7670,7 +7712,7 @@ document.addEventListener("keydown", (event) => {
 
 document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest?.("#marketPulseForm")) hideMarketPulseAutocomplete();
-  if (!event.target.closest?.(".symbol-field")) hideWatchlistSymbolResults();
+  if (!event.target.closest?.(".symbol-field")) hideAllSymbolResults();
 });
 
 document.addEventListener("click", (event) => {
@@ -7699,14 +7741,7 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (target.dataset.symbolPick) {
-      const input = $("#watchlistTickerInput");
-      if (input) input.value = target.dataset.symbolPick;
-      const currency = target.dataset.symbolCurrency;
-      const currencySelect = $("#watchlistCurrency");
-      if (currency && currencySelect && [...currencySelect.options].some((o) => o.value === currency)) {
-        currencySelect.value = currency;
-      }
-      hideWatchlistSymbolResults();
+      applySymbolPick(target);
       return;
     }
     if (target.dataset.pulseAutocompleteIndex) {

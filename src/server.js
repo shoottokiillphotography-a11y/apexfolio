@@ -109,6 +109,90 @@ function emailConfigured() {
   return Boolean(config.sendgridApiKey && config.sendgridFromEmail);
 }
 
+function scoreSymbolMatch(row, query) {
+  const q = String(query || "").trim().toLowerCase();
+  const symbol = String(row.symbol || "").toLowerCase();
+  const name = String(row.name || "").toLowerCase();
+  const source = String(row.exchange || "").toLowerCase();
+  if (!q) return null;
+  if (symbol === q || name === q) return 0;
+  if (symbol.startsWith(q)) return 1;
+  if (name.startsWith(q)) return 2;
+  if (symbol.includes(q)) return 3;
+  if (name.includes(q)) return 4;
+  if (source.includes(q)) return 5;
+  return null;
+}
+
+function userSymbolMatches(userId, query, limit = 10) {
+  const q = String(query || "").trim();
+  if (!q) return [];
+  const database = getDb();
+  const rows = [
+    ...database.prepare(`
+      SELECT DISTINCT e.ticker AS symbol, COALESCE(e.name, e.ticker) AS name, e.currency AS currency, 'Portfolio' AS exchange
+      FROM equities e
+      JOIN holding_lots l ON l.ticker = e.ticker
+      WHERE l.user_id = ?
+    `).all(userId),
+    ...database.prepare(`
+      SELECT DISTINCT w.ticker AS symbol, COALESCE(e.name, w.ticker) AS name, w.currency AS currency, wl.name AS exchange
+      FROM watchlist_items w
+      JOIN watchlists wl ON wl.id = w.watchlist_id
+      LEFT JOIN equities e ON e.ticker = w.ticker
+      WHERE w.user_id = ?
+    `).all(userId)
+  ];
+  const seen = new Set();
+  return rows
+    .map((row) => ({ ...row, score: scoreSymbolMatch(row, q) }))
+    .filter((row) => row.score != null)
+    .sort((a, b) => a.score - b.score || String(a.symbol).localeCompare(String(b.symbol)))
+    .filter((row) => {
+      const symbol = normalizeTicker(row.symbol);
+      if (!symbol || seen.has(symbol)) return false;
+      seen.add(symbol);
+      return true;
+    })
+    .slice(0, limit)
+    .map((row) => ({
+      symbol: normalizeTicker(row.symbol),
+      name: row.name || row.symbol,
+      exchange: row.exchange || "ApexFolio",
+      type: "EQUITY",
+      currency: row.currency || "USD",
+      source: "local"
+    }));
+}
+
+async function searchSymbolsForUser(userId, query) {
+  const local = userSymbolMatches(userId, query);
+  const remote = await searchSymbols(query);
+  const seen = new Set(local.map((row) => normalizeTicker(row.symbol)));
+  const combined = [...local];
+  for (const row of remote) {
+    const symbol = normalizeTicker(row.symbol);
+    if (!symbol || seen.has(symbol)) continue;
+    seen.add(symbol);
+    combined.push(row);
+  }
+  return combined.slice(0, 10);
+}
+
+async function resolveTickerInputForUser(userId, input) {
+  const raw = String(input || "").trim();
+  if (!raw) return raw;
+  const local = userSymbolMatches(userId, raw, 1);
+  const looksLikeName = /\s/.test(raw) || /[a-z]/.test(raw);
+  const normalizedRaw = normalizeTicker(raw);
+  if (local.length && (
+    looksLikeName
+    || normalizedRaw === local[0].symbol
+    || (normalizedRaw.length >= 3 && local[0].symbol.startsWith(`${normalizedRaw}.`))
+  )) return local[0].symbol;
+  return resolveTickerInput(raw);
+}
+
 function contentType(filename) {
   const ext = path.extname(filename).toLowerCase();
   return {
@@ -494,7 +578,7 @@ async function handleApi(req, res, url) {
     {
       method: "GET",
       path: "/api/symbols/search",
-      handler: async () => ({ results: await searchSymbols(url.searchParams.get("q") || "") })
+      handler: async () => ({ results: await searchSymbolsForUser(user.id, url.searchParams.get("q") || "") })
     },
     {
       method: "GET",
@@ -733,7 +817,11 @@ async function handleApi(req, res, url) {
     {
       method: "POST",
       path: "/api/lots",
-      handler: async () => ({ id: addManualLot(user.id, await readJson(req)) })
+      handler: async () => {
+        const body = await readJson(req);
+        if (body && body.ticker) body.ticker = await resolveTickerInputForUser(user.id, body.ticker);
+        return { id: addManualLot(user.id, body) };
+      }
     },
     {
       method: "POST",
@@ -767,7 +855,7 @@ async function handleApi(req, res, url) {
       path: "/api/watchlist",
       handler: async () => {
         const body = await readJson(req);
-        if (body && body.ticker) body.ticker = await resolveTickerInput(body.ticker);
+        if (body && body.ticker) body.ticker = await resolveTickerInputForUser(user.id, body.ticker);
         addOrUpdateWatchlistItem(user.id, body);
         return { ok: true };
       }

@@ -1236,9 +1236,10 @@
           <button class="icon-button" data-close-dialog="lotDialog" onclick="document.getElementById('lotDialog').close()" aria-label="Close" type="button">X</button>
         </div>
         <div class="dialog-grid">
-          <label class="field">
-            <span>Ticker</span>
-            <input name="ticker" required>
+          <label class="field symbol-field">
+            <span>Ticker or company name</span>
+            <input name="ticker" id="lotTickerInput" placeholder="Ticker or company name" autocomplete="off" required aria-autocomplete="list" aria-expanded="false" aria-controls="lotSymbolResults">
+            <div id="lotSymbolResults" class="symbol-autocomplete" hidden></div>
           </label>
           <label class="field">
             <span>Segment</span>
