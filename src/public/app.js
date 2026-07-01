@@ -4033,15 +4033,32 @@ function rangeBar(value, low, high) {
   return `<span class="range-bar" style="--range-position:${pct}%"><i></i></span>`;
 }
 
+function quoteProviderLabel(provider) {
+  return String(provider || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (character) => character.toUpperCase()) || "Quote Feed";
+}
+
+function quoteSourceCell(quote) {
+  if (!quote || (!quote.provider && quote.status !== "LIVE")) return `<span class="status-pill unknown">No Data</span>`;
+  const className = quote.stale ? "warning" : quote.status === "LIVE" ? "live" : "unknown";
+  const label = quoteProviderLabel(quote.provider || quote.status);
+  return `
+    <span class="status-pill ${className}">${escapeHtml(label)}</span>
+    ${quote.stale ? `<br><span class="muted">stale quote</span>` : ""}
+  `;
+}
+
 function marketDataRows(position, user) {
   const quote = position.price || {};
   const currency = quote.currency || user.baseCurrency;
   const exposure = positionExposure(position);
   const changeClass = valueClass(quote.changePercent || 0);
-  const marketStatus = quotePriceLabel(quote, position.ticker);
-  const statusClass = statusClassForMarket(marketStatus);
   const moveClass = state.priceMoves.get(position.ticker) ? `price-flash-${state.priceMoves.get(position.ticker)}` : "";
   const marketCap = normalizeMarketCap(quote.marketCap ?? position.fundamentals?.marketCap);
+  const updatedAt = priceAsOfLabel(quote.asOf) || "--";
   return `
     <tr class="market-data-row">
       <td>${tickerButton(position.ticker)}<br><span class="muted">${escapeHtml(position.name || quote.exchangeName || "")}</span></td>
@@ -4049,12 +4066,11 @@ function marketDataRows(position, user) {
       <td class="num ${changeClass}">${nullableSignedPercent(quote.changePercent)}</td>
       <td class="num ${valueClass(quote.changeAmount || 0)}">${nullableSignedMoney(quote.changeAmount, currency)}</td>
       <td>${rangeText(quote.dayLow, quote.dayHigh, currency)}${rangeBar(quote.price, quote.dayLow, quote.dayHigh)}</td>
-      <td class="num">${nullableCompactMoney(marketCap, currency)}</td>
-      <td class="num">${compactNumber(quote.volume)}</td>
-      <td class="num">${compactNumber(quote.averageVolume)}</td>
       <td>${rangeText(quote.fiftyTwoWeekLow, quote.fiftyTwoWeekHigh, currency)}${rangeBar(quote.price, quote.fiftyTwoWeekLow, quote.fiftyTwoWeekHigh)}</td>
-      <td class="num">${nullableMoney(quote.fiftyDayAverage, currency)}</td>
-      <td class="num">${nullableMoney(quote.twoHundredDayAverage, currency)}</td>
+      <td class="num">${compactNumber(quote.volume)}</td>
+      <td class="num">${nullableCompactMoney(marketCap, currency)}</td>
+      <td>${quoteSourceCell(quote)}</td>
+      <td><span class="muted">${escapeHtml(updatedAt)}</span></td>
       <td class="num">${money(position.currentValueBase, user.baseCurrency)}</td>
       <td class="num">${percent(exposure)}</td>
     </tr>
@@ -4086,12 +4102,11 @@ function marketHoldingsHead() {
       <th class="num">Day %</th>
       <th class="num">Day Amt</th>
       <th>Day Range</th>
-      <th class="num">Market Cap</th>
-      <th class="num">Volume</th>
-      <th class="num">Avg Volume</th>
       <th>52W Range</th>
-      <th class="num">50D MA</th>
-      <th class="num">200D MA</th>
+      <th class="num">Volume</th>
+      <th class="num">Market Cap</th>
+      <th>Source</th>
+      <th>Updated</th>
       <th class="num">Value</th>
       <th class="num">Exposure</th>
     </tr>
@@ -4106,7 +4121,7 @@ function renderHoldings() {
   $("#holdingsTable").classList.toggle("market-data-table", state.holdingsViewMode === "market");
   $("#holdingsHead").innerHTML = state.holdingsViewMode === "market" ? marketHoldingsHead() : currentHoldingsHead();
   const rows = groupedPositions(sortPositions(positions)).map((group) => (
-    `${renderGroupHeader(group, user, state.holdingsViewMode === "market" ? 13 : 10)}${group.positions.map((position) => (
+    `${renderGroupHeader(group, user, state.holdingsViewMode === "market" ? 12 : 10)}${group.positions.map((position) => (
       state.holdingsViewMode === "market" ? marketDataRows(position, user) : renderPositionRows(position, user)
     )).join("")}`
   ));
