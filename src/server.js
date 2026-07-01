@@ -72,7 +72,6 @@ import {
   updateManualPortfolioSnapshot,
   saveOpeningPortfolioBalance
 } from "./services/portfolio-wealth.js";
-import { reallocateLightWonderSales } from "./services/sale-lot-repair.js";
 import {
   authenticatedUser,
   authNeedsSetup,
@@ -547,14 +546,6 @@ async function handleApi(req, res, url) {
       handler: async () => {
         requireOwner(user);
         return { user: createUserAccount(await readJson(req), database) };
-      }
-    },
-    {
-      method: "POST",
-      path: "/api/admin/repair-lnw-sales",
-      handler: async () => {
-        requireOwner(user);
-        return reallocateLightWonderSales(user.id, { apply: true });
       }
     },
     {

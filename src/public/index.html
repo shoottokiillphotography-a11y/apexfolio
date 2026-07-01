@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-  <!-- ApexFolio frontend build: 2026-06-28-desktop-golden-cards-v2 -->
+  <!-- ApexFolio frontend build: 2026-06-28-mobile-header-v1 -->
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,7 +9,7 @@
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
     <link rel="apple-touch-icon" href="/favicon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=desktop-golden-cards-v2">
+    <link rel="stylesheet" href="/styles.css?v=mobile-header-v1">
   </head>
   <body>
     <section class="auth-gate" id="authGate" hidden>
@@ -137,9 +137,15 @@
 
       <div class="workspace">
         <header class="app-header">
-          <div>
+          <div class="app-title-block">
             <p class="eyebrow">Investment Portfolio</p>
-            <img class="mobile-header-logo" src="/logo.png" alt="ApexFolio">
+            <div class="mobile-app-brand" aria-label="ApexFolio">
+              <img class="mobile-header-logo" src="/logo.png" alt="">
+              <span>
+                <em>Portfolio Intelligence</em>
+                <strong>ApexFolio</strong>
+              </span>
+            </div>
             <h1 id="mobileViewTitle">Command Center</h1>
           </div>
           <div class="header-actions">
@@ -474,7 +480,7 @@
           </div>
           <div class="mobile-download-actions">
             <a class="button primary" href="/api/exports/portfolio" download>Portfolio snapshot</a>
-            <a class="button secondary" href="/api/exports/history" download>History journal</a>
+            <a class="button secondary" href="/api/exports/history" download>ApexFolio complete picture</a>
             <a class="button secondary" href="/api/exports/triggered-alerts" download>Triggered alerts</a>
           </div>
         </section>
@@ -758,21 +764,13 @@
                 <span>Open holdings plus cash, sorted by current value. No closed positions, watchlists, or JSON dump.</span>
               </div>
               <div class="export-actions">
-                <a class="button secondary" href="/api/exports/history" download>History (journal)</a>
-                <span>Chronological BUY, SELL, EXTERNAL_SELL, and DIVIDEND rows only.</span>
+                <a class="button secondary" href="/api/exports/history" download>ApexFolio complete picture</a>
+                <span>Portfolio, cash, groups, allocations, lots, sales, dividends, external closed positions, alerts, watchlists, uploads, events, and notifications.</span>
               </div>
               <div class="export-actions">
                 <a class="button secondary" href="/api/exports/triggered-alerts" download>Triggered alerts</a>
                 <span>Only alerts currently needing review. Add <code>?include=reviewed</code> to include reviewed triggers.</span>
               </div>
-            </div>
-            <div class="settings-card owner-only">
-              <div>
-                <strong>Lot Repair</strong>
-                <span>Fix LNW.AX June sales to newest/cheapest lots.</span>
-              </div>
-              <button class="button secondary" data-action="repairLnwSales" type="button">Fix Light &amp; Wonder Lots</button>
-              <span class="muted" id="lnwRepairResult"></span>
             </div>
           </div>
           <div class="import-history-header">
@@ -1036,7 +1034,7 @@
             <article class="mobile-more-card">
               <p class="eyebrow">Exports</p>
               <a class="mobile-more-row" href="/api/exports/portfolio" download>Portfolio snapshot</a>
-              <a class="mobile-more-row" href="/api/exports/history" download>History journal</a>
+              <a class="mobile-more-row" href="/api/exports/history" download>ApexFolio complete picture</a>
               <a class="mobile-more-row" href="/api/exports/triggered-alerts" download>Triggered alerts</a>
             </article>
             <article class="mobile-more-card">
@@ -1425,6 +1423,6 @@
       </div>
     </dialog>
 
-    <script src="/app.js?v=desktop-golden-cards-v2" type="module"></script>
+    <script src="/app.js?v=mobile-header-v1" type="module"></script>
   </body>
 </html>

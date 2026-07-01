@@ -1,6 +1,6 @@
 import { ACTION_OPTIONS, alertTypeForAction, parseAlertCommand, validateParsedAlert } from "./alert-command-parser.js";
 
-const FRONTEND_BUILD = "2026-06-28-desktop-golden-cards-v2";
+const FRONTEND_BUILD = "2026-06-28-mobile-header-v1";
 const DESKTOP_PANEL_STORAGE_PREFIX = "apexfolio.panel";
 
 function loadHoldingsView() {
@@ -7795,25 +7795,6 @@ document.addEventListener("click", async (event) => {
       state.realizedIncomeView = target.dataset.realizedView;
       localStorage.setItem("realizedIncomeView", state.realizedIncomeView);
       renderRealizedIncome();
-      return;
-    }
-    if (action === "repairLnwSales") {
-      const confirmed = window.confirm("Fix LNW.AX June Netwealth sales to newest/cheapest lots? A database backup will be created first.");
-      if (!confirmed) return;
-      target.disabled = true;
-      const resultNode = $("#lnwRepairResult");
-      if (resultNode) resultNode.textContent = "Repairing...";
-      try {
-        const result = await api("/api/admin/repair-lnw-sales", { method: "POST" });
-        if (resultNode) {
-          resultNode.textContent = `Done. Realized P&L changed by ${signedMoney(result.realizedGainLossChange || 0, state.dashboard?.user?.baseCurrency || "AUD")}.`;
-        }
-        await loadDashboard(true);
-        await loadRealizedIncome();
-        toast("Light & Wonder lots repaired");
-      } finally {
-        target.disabled = false;
-      }
       return;
     }
     if (action === "focusExternalIncomeForm") {
