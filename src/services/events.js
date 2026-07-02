@@ -18,6 +18,10 @@ import {
 
 const limiter = new RateLimiter(config.finnhubMinIntervalMs);
 const rssLimiter = new RateLimiter(350);
+const NEWS_REFRESH_TICKER_LIMIT = 3;
+const NEWS_YAHOO_FALLBACK_LIMIT = 2;
+const NEWS_PROVIDER_TIMEOUT_MS = 1800;
+const NEWS_REFRESH_BUDGET_MS = 7000;
 const TRUSTED_RSS_SOURCES = new Set([
   "associated press",
   "ap",
@@ -50,12 +54,12 @@ async function finnhub(pathname, params) {
   const url = new URL(`https://finnhub.io/api/v1/${pathname}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   url.searchParams.set("token", config.finnhubApiKey);
-  return limiter.enqueue(() => fetchJson(url));
+  return limiter.enqueue(() => fetchJson(url, { timeoutMs: NEWS_PROVIDER_TIMEOUT_MS }));
 }
 
 async function fetchText(url, options = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 12000);
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || NEWS_PROVIDER_TIMEOUT_MS);
   try {
     const response = await fetch(url, {
       ...options,
@@ -309,7 +313,7 @@ async function yahooFinanceRssNews(ticker) {
   url.searchParams.set("s", ticker);
   url.searchParams.set("region", "US");
   url.searchParams.set("lang", "en-US");
-  const xml = await rssLimiter.enqueue(() => fetchText(url, { timeoutMs: 10000 }));
+  const xml = await rssLimiter.enqueue(() => fetchText(url, { timeoutMs: NEWS_PROVIDER_TIMEOUT_MS }));
   const items = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
   return items.map((item) => newsItemFromYahooRss(ticker, item)).filter(Boolean);
 }
@@ -356,7 +360,7 @@ async function googleNewsRssNews(ticker, name) {
   url.searchParams.set("hl", "en-US");
   url.searchParams.set("gl", "US");
   url.searchParams.set("ceid", "US:en");
-  const xml = await rssLimiter.enqueue(() => fetchText(url, { timeoutMs: 10000 }));
+  const xml = await rssLimiter.enqueue(() => fetchText(url, { timeoutMs: NEWS_PROVIDER_TIMEOUT_MS }));
   const items = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
   return items.map((item) => newsItemFromGoogleRss(ticker, item)).filter(Boolean);
 }
@@ -428,52 +432,10 @@ function newsSourceLimit(item) {
   return 12;
 }
 
-export async function dashboardNews(userId, { refresh = false } = {}) {
-  const database = getDb();
-  const ownedEquities = ownedPortfolioEquities(database, userId);
-  const ownedTickers = ownedEquities.map((equity) => equity.ticker);
-  const items = sourceLinkedStoredNews(database, userId, ownedTickers);
-  const errors = [];
-  const providers = [];
-  if (items.length) providers.push("Stored corporate events");
-
-  if (ownedTickers.length && (refresh || items.length < 6)) {
-    const from = daysFromNow(-7);
-    const to = todayIsoDate();
-    for (const equity of ownedEquities.slice(0, 10)) {
-      const ticker = equity.ticker;
-      if (config.finnhubApiKey) {
-        try {
-          const news = await finnhub("company-news", { symbol: ticker, from, to });
-          providers.push("Finnhub company news");
-          for (const item of news || []) {
-            const normalized = newsItemFromFinnhub(ticker, item);
-            if (normalized) items.push(normalized);
-          }
-        } catch (error) {
-          errors.push({ ticker, provider: "finnhub", message: error.message });
-        }
-      }
-      try {
-        const news = await yahooFinanceRssNews(ticker);
-        if (news.length) providers.push("Yahoo Finance RSS");
-        items.push(...news);
-      } catch (error) {
-        errors.push({ ticker, provider: "yahoo_rss", message: error.message });
-      }
-      try {
-        const news = await googleNewsRssNews(ticker, equity.name);
-        if (news.length) providers.push("Google News RSS trusted sources");
-        items.push(...news);
-      } catch (error) {
-        errors.push({ ticker, provider: "google_news_rss", message: error.message });
-      }
-    }
-  }
-
+function finalizeNewsItems(items) {
   const seen = new Set();
   const sourceCounts = new Map();
-  const uniqueItems = items
+  return items
     .filter((item) => {
       const key = item.sourceUrl || `${item.ticker}:${item.title}`;
       if (seen.has(key)) return false;
@@ -490,6 +452,10 @@ export async function dashboardNews(userId, { refresh = false } = {}) {
       return true;
     })
     .slice(0, 30);
+}
+
+function newsResponse({ items, ownedTickers, providers, errors }) {
+  const uniqueItems = finalizeNewsItems(items);
 
   const message = !ownedTickers.length
     ? "No open portfolio positions were found for the news feed."
@@ -509,6 +475,100 @@ export async function dashboardNews(userId, { refresh = false } = {}) {
       errors
     }
   };
+}
+
+function budgetRemaining(deadline) {
+  return Date.now() < deadline - 500;
+}
+
+async function addProviderNews({ provider, ticker, task, normalize, items, providers, errors }) {
+  try {
+    const news = await task();
+    const normalized = (news || []).map((item) => normalize(item)).filter(Boolean);
+    if (normalized.length) providers.push(provider);
+    items.push(...normalized);
+  } catch (error) {
+    errors.push({ ticker, provider, message: error.message });
+  }
+}
+
+export async function dashboardNews(userId, { refresh = false } = {}) {
+  try {
+    const database = getDb();
+    const ownedEquities = ownedPortfolioEquities(database, userId);
+    const ownedTickers = ownedEquities.map((equity) => equity.ticker);
+    const items = sourceLinkedStoredNews(database, userId, ownedTickers);
+    const errors = [];
+    const providers = [];
+    if (items.length) providers.push("Stored corporate events");
+
+    if (ownedTickers.length && refresh) {
+      const from = daysFromNow(-7);
+      const to = todayIsoDate();
+      const deadline = Date.now() + NEWS_REFRESH_BUDGET_MS;
+      const refreshEquities = ownedEquities.slice(0, NEWS_REFRESH_TICKER_LIMIT);
+
+      for (const equity of refreshEquities) {
+        if (!budgetRemaining(deadline)) {
+          errors.push({ ticker: equity.ticker, provider: "news_refresh_budget", message: "News refresh time budget reached." });
+          break;
+        }
+        const ticker = equity.ticker;
+        const attempts = [];
+        if (config.finnhubApiKey) {
+          attempts.push(addProviderNews({
+            provider: "Finnhub company news",
+            ticker,
+            task: () => finnhub("company-news", { symbol: ticker, from, to }),
+            normalize: (item) => newsItemFromFinnhub(ticker, item),
+            items,
+            providers,
+            errors
+          }));
+        }
+        attempts.push(addProviderNews({
+          provider: "Google News RSS trusted sources",
+          ticker,
+          task: () => googleNewsRssNews(ticker, equity.name),
+          normalize: (item) => item,
+          items,
+          providers,
+          errors
+        }));
+        await Promise.allSettled(attempts);
+      }
+
+      const hasNonYahoo = items.some((item) => !isYahooSource(newsSourceName(item)) && item.source !== "yahoo_finance_rss");
+      if (!hasNonYahoo && budgetRemaining(deadline)) {
+        for (const equity of refreshEquities.slice(0, NEWS_YAHOO_FALLBACK_LIMIT)) {
+          if (!budgetRemaining(deadline)) break;
+          const ticker = equity.ticker;
+          await addProviderNews({
+            provider: "Yahoo Finance RSS fallback",
+            ticker,
+            task: () => yahooFinanceRssNews(ticker),
+            normalize: (item) => item,
+            items,
+            providers,
+            errors
+          });
+        }
+      }
+    }
+
+    return newsResponse({ items, ownedTickers, providers, errors });
+  } catch (error) {
+    return {
+      items: [],
+      diagnostics: {
+        status: "ERROR",
+        message: `News service error: ${error.message}`,
+        providers: [],
+        ownedTickers: 0,
+        errors: [{ provider: "news_service", message: error.message }]
+      }
+    };
+  }
 }
 
 export async function refreshCorporateEvents(userId) {
