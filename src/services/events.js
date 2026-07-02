@@ -18,6 +18,32 @@ import {
 
 const limiter = new RateLimiter(config.finnhubMinIntervalMs);
 const rssLimiter = new RateLimiter(350);
+const TRUSTED_RSS_SOURCES = new Set([
+  "associated press",
+  "ap",
+  "barron's",
+  "barrons",
+  "bloomberg",
+  "business wire",
+  "cnbc",
+  "dow jones",
+  "financial times",
+  "ft",
+  "globenewswire",
+  "investor's business daily",
+  "investors business daily",
+  "marketwatch",
+  "morningstar",
+  "nasdaq",
+  "pr newswire",
+  "reuters",
+  "sec",
+  "the wall street journal",
+  "wall street journal",
+  "wsj",
+  "yahoo",
+  "yahoo finance"
+]);
 
 async function finnhub(pathname, params) {
   if (!config.finnhubApiKey) throw new Error("FINNHUB_API_KEY is not configured");
@@ -181,6 +207,20 @@ function ownedPortfolioTickers(database, userId) {
   `).all(userId).map((row) => row.ticker);
 }
 
+function ownedPortfolioEquities(database, userId) {
+  return database.prepare(`
+    SELECT l.ticker, COALESCE(e.name, l.ticker) AS name,
+      SUM(l.quantity) AS quantity,
+      SUM(l.quantity * COALESCE(mp.price, mp.regular_market_price, mp.previous_close, l.purchase_price, 0)) AS roughValue
+    FROM holding_lots l
+    LEFT JOIN equities e ON e.ticker = l.ticker
+    LEFT JOIN market_prices mp ON mp.ticker = l.ticker
+    WHERE l.user_id = ? AND l.quantity > 0
+    GROUP BY l.ticker, e.name
+    ORDER BY roughValue DESC, l.ticker
+  `).all(userId);
+}
+
 function safeNewsUrl(value) {
   try {
     const url = new URL(String(value || ""));
@@ -210,6 +250,26 @@ function rssTag(item, tag) {
 
 function rssSource(item) {
   return rssTag(item, "source") || "Yahoo Finance";
+}
+
+function normalizedRssSource(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/^the\s+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function trustedRssSource(value = "") {
+  const source = normalizedRssSource(value);
+  return TRUSTED_RSS_SOURCES.has(source)
+    || source.includes("reuters")
+    || source.includes("bloomberg")
+    || source.includes("financial times")
+    || source.includes("wall street journal")
+    || source.includes("business wire")
+    || source.includes("pr newswire")
+    || source.includes("globenewswire");
 }
 
 function newsItemFromYahooRss(ticker, item = "") {
@@ -242,6 +302,50 @@ async function yahooFinanceRssNews(ticker) {
   const xml = await rssLimiter.enqueue(() => fetchText(url, { timeoutMs: 10000 }));
   const items = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
   return items.map((item) => newsItemFromYahooRss(ticker, item)).filter(Boolean);
+}
+
+function googleNewsQuery(ticker, name) {
+  const cleanName = String(name || "").replace(/"/g, "").trim();
+  const cleanTicker = String(ticker || "").replace(/"/g, "").trim();
+  if (cleanName && cleanName.toUpperCase() !== cleanTicker.toUpperCase()) {
+    return `"${cleanName}" stock OR shares`;
+  }
+  return `"${cleanTicker}" stock OR shares`;
+}
+
+function newsItemFromGoogleRss(ticker, item = "") {
+  const newsSource = rssSource(item);
+  if (!trustedRssSource(newsSource)) return null;
+  const sourceUrl = safeNewsUrl(rssTag(item, "link") || rssTag(item, "guid"));
+  if (!sourceUrl) return null;
+  const title = rssTag(item, "title") || `${ticker} news`;
+  const details = rssTag(item, "description") || null;
+  const dateValue = rssTag(item, "pubDate") || rssTag(item, "dc:date");
+  const published = dateValue ? new Date(dateValue) : new Date();
+  const publishedAt = Number.isFinite(published.getTime()) ? published.toISOString() : nowIso();
+  return {
+    id: `google-news:${ticker}:${publishedAt}:${sourceUrl}`,
+    ticker,
+    eventType: classifyThesisNews(title, details || "") || "NEWS",
+    eventDate: publishedAt.slice(0, 10),
+    title,
+    details,
+    source: "google_news_rss",
+    sourceUrl,
+    newsSource,
+    publishedAt
+  };
+}
+
+async function googleNewsRssNews(ticker, name) {
+  const url = new URL("https://news.google.com/rss/search");
+  url.searchParams.set("q", googleNewsQuery(ticker, name));
+  url.searchParams.set("hl", "en-US");
+  url.searchParams.set("gl", "US");
+  url.searchParams.set("ceid", "US:en");
+  const xml = await rssLimiter.enqueue(() => fetchText(url, { timeoutMs: 10000 }));
+  const items = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
+  return items.map((item) => newsItemFromGoogleRss(ticker, item)).filter(Boolean);
 }
 
 function newsItemFromFinnhub(ticker, item = {}) {
@@ -293,7 +397,8 @@ function sourceLinkedStoredNews(database, userId, ownedTickers) {
 
 export async function dashboardNews(userId, { refresh = false } = {}) {
   const database = getDb();
-  const ownedTickers = ownedPortfolioTickers(database, userId);
+  const ownedEquities = ownedPortfolioEquities(database, userId);
+  const ownedTickers = ownedEquities.map((equity) => equity.ticker);
   const items = sourceLinkedStoredNews(database, userId, ownedTickers);
   const errors = [];
   const providers = [];
@@ -302,7 +407,8 @@ export async function dashboardNews(userId, { refresh = false } = {}) {
   if (ownedTickers.length && (refresh || items.length < 6)) {
     const from = daysFromNow(-7);
     const to = todayIsoDate();
-    for (const ticker of ownedTickers.slice(0, 10)) {
+    for (const equity of ownedEquities.slice(0, 10)) {
+      const ticker = equity.ticker;
       if (config.finnhubApiKey) {
         try {
           const news = await finnhub("company-news", { symbol: ticker, from, to });
@@ -321,6 +427,13 @@ export async function dashboardNews(userId, { refresh = false } = {}) {
         items.push(...news);
       } catch (error) {
         errors.push({ ticker, provider: "yahoo_rss", message: error.message });
+      }
+      try {
+        const news = await googleNewsRssNews(ticker, equity.name);
+        if (news.length) providers.push("Google News RSS trusted sources");
+        items.push(...news);
+      } catch (error) {
+        errors.push({ ticker, provider: "google_news_rss", message: error.message });
       }
     }
   }
