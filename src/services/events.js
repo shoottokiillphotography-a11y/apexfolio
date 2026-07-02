@@ -17,6 +17,7 @@ import {
 } from "./notifications.js";
 
 const limiter = new RateLimiter(config.finnhubMinIntervalMs);
+const rssLimiter = new RateLimiter(350);
 
 async function finnhub(pathname, params) {
   if (!config.finnhubApiKey) throw new Error("FINNHUB_API_KEY is not configured");
@@ -24,6 +25,27 @@ async function finnhub(pathname, params) {
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   url.searchParams.set("token", config.finnhubApiKey);
   return limiter.enqueue(() => fetchJson(url));
+}
+
+async function fetchText(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 12000);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "ApexFolio portfolio news monitor",
+        "Accept": "application/rss+xml, application/xml, text/xml, text/plain;q=0.9, */*;q=0.8",
+        ...(options.headers || {})
+      }
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return text;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function eventSourceId(type, ticker, eventDate, payload) {
@@ -168,6 +190,60 @@ function safeNewsUrl(value) {
   }
 }
 
+function decodeXmlText(value = "") {
+  return String(value || "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function rssTag(item, tag) {
+  const match = item.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  return match ? decodeXmlText(match[1]) : "";
+}
+
+function rssSource(item) {
+  return rssTag(item, "source") || "Yahoo Finance";
+}
+
+function newsItemFromYahooRss(ticker, item = "") {
+  const sourceUrl = safeNewsUrl(rssTag(item, "link") || rssTag(item, "guid"));
+  if (!sourceUrl) return null;
+  const title = rssTag(item, "title") || `${ticker} news`;
+  const details = rssTag(item, "description") || null;
+  const dateValue = rssTag(item, "pubDate") || rssTag(item, "dc:date");
+  const published = dateValue ? new Date(dateValue) : new Date();
+  const publishedAt = Number.isFinite(published.getTime()) ? published.toISOString() : nowIso();
+  return {
+    id: `yahoo:${ticker}:${publishedAt}:${sourceUrl}`,
+    ticker,
+    eventType: classifyThesisNews(title, details || "") || "NEWS",
+    eventDate: publishedAt.slice(0, 10),
+    title,
+    details,
+    source: "yahoo_finance_rss",
+    sourceUrl,
+    newsSource: rssSource(item),
+    publishedAt
+  };
+}
+
+async function yahooFinanceRssNews(ticker) {
+  const url = new URL("https://feeds.finance.yahoo.com/rss/2.0/headline");
+  url.searchParams.set("s", ticker);
+  url.searchParams.set("region", "US");
+  url.searchParams.set("lang", "en-US");
+  const xml = await rssLimiter.enqueue(() => fetchText(url, { timeoutMs: 10000 }));
+  const items = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
+  return items.map((item) => newsItemFromYahooRss(ticker, item)).filter(Boolean);
+}
+
 function newsItemFromFinnhub(ticker, item = {}) {
   const sourceUrl = safeNewsUrl(item.url);
   if (!sourceUrl) return null;
@@ -220,19 +296,31 @@ export async function dashboardNews(userId, { refresh = false } = {}) {
   const ownedTickers = ownedPortfolioTickers(database, userId);
   const items = sourceLinkedStoredNews(database, userId, ownedTickers);
   const errors = [];
+  const providers = [];
+  if (items.length) providers.push("Stored corporate events");
 
-  if (config.finnhubApiKey && ownedTickers.length && (refresh || items.length < 3)) {
+  if (ownedTickers.length && (refresh || items.length < 6)) {
     const from = daysFromNow(-7);
     const to = todayIsoDate();
-    for (const ticker of ownedTickers.slice(0, 8)) {
-      try {
-        const news = await finnhub("company-news", { symbol: ticker, from, to });
-        for (const item of news || []) {
-          const normalized = newsItemFromFinnhub(ticker, item);
-          if (normalized) items.push(normalized);
+    for (const ticker of ownedTickers.slice(0, 10)) {
+      if (config.finnhubApiKey) {
+        try {
+          const news = await finnhub("company-news", { symbol: ticker, from, to });
+          providers.push("Finnhub company news");
+          for (const item of news || []) {
+            const normalized = newsItemFromFinnhub(ticker, item);
+            if (normalized) items.push(normalized);
+          }
+        } catch (error) {
+          errors.push({ ticker, provider: "finnhub", message: error.message });
         }
+      }
+      try {
+        const news = await yahooFinanceRssNews(ticker);
+        if (news.length) providers.push("Yahoo Finance RSS");
+        items.push(...news);
       } catch (error) {
-        errors.push({ ticker, message: error.message });
+        errors.push({ ticker, provider: "yahoo_rss", message: error.message });
       }
     }
   }
@@ -250,19 +338,18 @@ export async function dashboardNews(userId, { refresh = false } = {}) {
 
   const message = !ownedTickers.length
     ? "No open portfolio positions were found for the news feed."
-    : !config.finnhubApiKey
-      ? "Finnhub key is not configured. Stored source-linked events are still shown when available."
-      : errors.length
-        ? `${errors.length} provider checks failed. Stored and successful news items are shown.`
-        : uniqueItems.length
-          ? "Portfolio news loaded."
-          : "No recent source-linked articles were returned for owned positions.";
+    : errors.length
+      ? `${errors.length} provider checks failed. Stored and successful news items are shown.`
+      : uniqueItems.length
+        ? "Portfolio news loaded."
+        : "No recent source-linked articles were returned for owned positions.";
 
   return {
     items: uniqueItems,
     diagnostics: {
-      status: errors.length ? "PARTIAL" : config.finnhubApiKey ? "LIVE" : "STORED_ONLY",
+      status: errors.length ? "PARTIAL" : providers.some((provider) => provider !== "Stored corporate events") ? "LIVE" : "STORED_ONLY",
       message,
+      providers: [...new Set(providers)],
       ownedTickers: ownedTickers.length,
       errors
     }

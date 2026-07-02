@@ -464,9 +464,12 @@ const REPUTABLE_NEWS_SOURCES = new Set([
   "bloomberg",
   "business wire",
   "cnbc",
+  "dow jones",
   "financial times",
   "ft",
   "globenewswire",
+  "investor's business daily",
+  "investors business daily",
   "marketwatch",
   "morningstar",
   "nasdaq",
@@ -5920,26 +5923,51 @@ function marketNewsItemsFromState(events, ownedTickers) {
   });
 }
 
-function signalsFallbackHtml(newsEvents, ownedTickers) {
-  const ownedNews = (newsEvents || [])
-    .filter((item) => ownedTickers.has(normalizePulseSymbol(item.ticker || "")))
-    .slice(0, 6);
-  if (!ownedNews.length) {
-    return `<p class="muted">No thesis-changing signals right now. Routine earnings events are excluded &mdash; new guidance, ratings, M&amp;A or analyst news on your holdings will appear here automatically.</p>`;
-  }
-  return ownedNews.map((event) => `
-    <div class="signal-card-row">
-      <div class="news-card-meta">
-        ${tickerButton(event.ticker)}
-        <span>${escapeHtml(londonTimeLabel(publishedAtForEvent(event)))}</span>
-      </div>
-      <div class="news-card-body">
-        <strong>${escapeHtml(event.title || "")}</strong>
-        <p>${escapeHtml(event.details || event.summary || "Owned-position news.")}</p>
-        <div class="news-source-row">${sourcePill(event)}${sourceLink(event, "Open source")}</div>
-      </div>
+function portfolioNewsRank(event) {
+  const signalRank = event.isSignal ? 0 : 1;
+  const importance = eventImportance(event);
+  const credibility = sourceCredibility(event).label;
+  const credibilityRank = credibility === "Primary" ? 0 : credibility === "Authoritative secondary" ? 1 : 2;
+  const published = new Date(publishedAtForEvent(event) || event.eventDate || 0).getTime() || 0;
+  return { signalRank, importance, credibilityRank, published };
+}
+
+function combinedPortfolioNewsItems(events, ownedTickers) {
+  const sourceItems = marketNewsItemsFromState(events, ownedTickers);
+  const thesisEvents = [...events, ...sourceItems]
+    .filter((event) => signalEligibleEvent(event, ownedTickers))
+    .map((event) => ({ ...event, isSignal: true }));
+  const newsEvents = sourceItems
+    .filter((event) => !signalEligibleEvent(event, ownedTickers))
+    .filter((event) => isReputableFeedSource(event) || eventImportance(event) <= 7)
+    .map((event) => ({ ...event, isSignal: false }));
+  const seen = new Set();
+  return [...thesisEvents, ...newsEvents]
+    .filter((event) => {
+      const key = event.sourceUrl || `${event.ticker}:${event.title}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => {
+      const ar = portfolioNewsRank(a);
+      const br = portfolioNewsRank(b);
+      return ar.signalRank - br.signalRank
+        || ar.importance - br.importance
+        || ar.credibilityRank - br.credibilityRank
+        || br.published - ar.published;
+    });
+}
+
+function portfolioNewsEmptyHtml() {
+  const message = state.news?.diagnostics?.message
+    || "Refresh News will check source-linked company news for the equities you currently own.";
+  return `
+    <div class="empty-state">
+      <strong>No portfolio news right now</strong>
+      <span>${escapeHtml(message)}</span>
     </div>
-  `).join("");
+  `;
 }
 
 function renderNewsIntelligence() {
@@ -5948,74 +5976,47 @@ function renderNewsIntelligence() {
     .sort((a, b) => eventImportance(a) - eventImportance(b)
       || Number(!isReputableFeedSource(a)) - Number(!isReputableFeedSource(b))
       || String(b.eventDate).localeCompare(String(a.eventDate)));
-  const thesisEvents = events.filter((event) => signalEligibleEvent(event, ownedTickers));
-  const newsEvents = marketNewsItemsFromState(events, ownedTickers);
-  const signalStatus = $("#signalStatus");
-  if (signalStatus) {
-    const highConfidence = thesisEvents.filter((event) => signalConfidence(event) === "High").length;
-    signalStatus.textContent = `${thesisEvents.length} owned-position signals | ${highConfidence} high confidence`;
+  const portfolioNews = combinedPortfolioNewsItems(events, ownedTickers);
+  const newsStatus = $("#marketNewsStatus");
+  if (newsStatus) {
+    const signalCount = portfolioNews.filter((event) => event.isSignal).length;
+    const reputable = portfolioNews.filter(isReputableFeedSource).length;
+    const providers = state.news?.diagnostics?.providers || [];
+    const providerText = providers.length ? providers.slice(0, 3).join(" + ") : (state.news?.diagnostics?.status || "cached events");
+    newsStatus.textContent = `${portfolioNews.length} portfolio items | ${signalCount} signals | ${reputable} trusted | ${providerText}`;
   }
-  const signalsNode = $("#signalsTable");
-  if (signalsNode) signalsNode.innerHTML = thesisEvents.length ? thesisEvents.slice(0, 8).map((event) => {
+  const newsNode = $("#marketNewsTable");
+  if (newsNode) newsNode.innerHTML = portfolioNews.length ? portfolioNews.slice(0, 10).map((event) => {
     const credibility = sourceCredibility(event);
     const freshness = freshnessForEvent(event);
     const confidence = signalConfidence(event);
+    const signalClass = event.isSignal ? (eventImportance(event) <= 2 ? "warning" : "ai") : "neutral";
     return `
-      <div class="signal-card-row">
+      <div class="news-card-row">
         <div class="news-card-meta">
           ${tickerButton(event.ticker)}
           <span class="status-pill ${freshness.className}" title="${escapeHtml(freshness.tooltip)}">${freshness.label}</span>
         </div>
         <div class="news-card-body">
           <div class="news-card-tags">
-            <span class="status-pill ${eventImportance(event) <= 2 ? "warning" : "ai"}">${escapeHtml(signalTypeLabel(event))}</span>
+            <span class="status-pill ${signalClass}">${event.isSignal ? "Signal" : "News"}</span>
+            <span class="status-pill ai">${escapeHtml(event.isSignal ? signalTypeLabel(event) : (event.eventType || "Company"))}</span>
             <span class="status-pill ${credibility.className}">${credibility.label}</span>
-            <span class="status-pill ${confidence === "High" ? "live" : confidence === "Medium" ? "ai" : "warning"}">${confidence}</span>
-          </div>
-          <strong>${escapeHtml(event.title)}</strong>
-          <p>${escapeHtml(event.details || "Verified development may affect thesis, valuation, risk, or position sizing.")}</p>
-          <div class="news-source-row">
-            <span class="muted">Impact ${impactForEvent(event)} | Status New</span>
-            ${sourcePill(event)}${sourceLink(event, "Open source")}
-          </div>
-        </div>
-      </div>
-    `;
-  }).join("") : signalsFallbackHtml(newsEvents, ownedTickers);
-
-  const newsStatus = $("#marketNewsStatus");
-  if (newsStatus) {
-    const reputable = newsEvents.filter(isReputableFeedSource).length;
-    const status = state.news?.diagnostics?.status || "cached events";
-    newsStatus.textContent = `${newsEvents.length} articles | ${reputable} official/reputable | ${status}`;
-  }
-  const newsNode = $("#marketNewsTable");
-  if (newsNode) newsNode.innerHTML = newsEvents.length ? newsEvents.slice(0, 8).map((event) => {
-    const freshness = freshnessForEvent(event);
-    return `
-      <div class="news-card-row">
-        <div class="news-card-meta">
-          ${tickerButton(event.ticker)}
-          <span title="${escapeHtml(freshness.tooltip)}">${escapeHtml(londonTimeLabel(publishedAtForEvent(event)))}</span>
-        </div>
-        <div class="news-card-body">
-          <div class="news-card-tags">
-            <span class="status-pill ai">${escapeHtml(event.eventType || "Company")}</span>
-            <span class="status-pill ${freshness.className}">${freshness.label}</span>
+            ${event.isSignal ? `<span class="status-pill ${confidence === "High" ? "live" : confidence === "Medium" ? "ai" : "warning"}">${confidence}</span>` : ""}
             <span class="status-pill neutral">Impact ${impactForEvent(event)}</span>
           </div>
           <strong>${escapeHtml(event.title)}</strong>
-          <p>${escapeHtml(event.details || "Source-linked portfolio news item.")}</p>
-          <div class="news-source-row">${sourcePill(event)}<span class="muted">${escapeHtml(readableFeedSource(event))}</span>${sourceLink(event, "Open source")}</div>
+          <p>${escapeHtml(event.details || (event.isSignal ? "Verified development may affect thesis, valuation, risk, or position sizing." : "Source-linked portfolio news item."))}</p>
+          <div class="news-source-row">
+            <span class="muted">${escapeHtml(londonTimeLabel(publishedAtForEvent(event)))}</span>
+            ${sourcePill(event)}
+            <span class="muted">${escapeHtml(readableFeedSource(event))}</span>
+            ${sourceLink(event, "Open source")}
+          </div>
         </div>
       </div>
     `;
-  }).join("") : `
-    <div class="empty-state">
-      <strong>No source-linked portfolio news yet</strong>
-      <span>${escapeHtml(state.news?.diagnostics?.message || "Refresh News will check Finnhub company news for the equities you currently own.")}</span>
-    </div>
-  `;
+  }).join("") : portfolioNewsEmptyHtml();
 }
 
 function renderDividends() {
