@@ -388,8 +388,7 @@ function syncForeignCashBalances(database, userId, matrix, rows, filename) {
       if (result.inserted) {
         stats.cashFxEventsCreated += 1;
         const state = stateByCurrency.get(currency);
-        const alreadyCoveredByOlderImport = state?.bootstrappedFromImportHistory
-          && state.lastEnd
+        const alreadyCoveredByOlderImport = state?.lastEnd
           && row.date <= state.lastEnd;
         if (alreadyCoveredByOlderImport) {
           stats.cashFxRowsSkippedAsOverlap += 1;
