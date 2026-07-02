@@ -1138,6 +1138,20 @@ function normalizedFeedSource(event) {
   return readableFeedSource(event).toLowerCase().replace(/^the\s+/, "");
 }
 
+function isYahooFeedSource(event) {
+  const source = normalizedFeedSource(event);
+  const route = String(event?.source || "").toLowerCase();
+  const href = safeExternalHref(event?.sourceUrl) || "";
+  return source.includes("yahoo")
+    || route === "yahoo_finance_rss"
+    || href.toLowerCase().includes("yahoo.com")
+    || href.toLowerCase().includes("finance.yahoo.");
+}
+
+function feedDiversityKey(event) {
+  return normalizedFeedSource(event) || String(event?.source || "unknown").toLowerCase();
+}
+
 function hasVerifiedSource(event) {
   return Boolean(safeExternalHref(event?.sourceUrl));
 }
@@ -5950,7 +5964,7 @@ function combinedPortfolioNewsItems(events, ownedTickers) {
     .filter((event) => isReputableFeedSource(event) || eventImportance(event) <= 7)
     .map((event) => ({ ...event, isSignal: false }));
   const seen = new Set();
-  return [...thesisEvents, ...newsEvents]
+  const sortedItems = [...thesisEvents, ...newsEvents]
     .filter((event) => {
       const key = event.sourceUrl || `${event.ticker}:${event.title}`;
       if (seen.has(key)) return false;
@@ -5965,6 +5979,30 @@ function combinedPortfolioNewsItems(events, ownedTickers) {
         || ar.credibilityRank - br.credibilityRank
         || br.published - ar.published;
     });
+  return limitYahooDominance(sortedItems);
+}
+
+function limitYahooDominance(items) {
+  const nonYahoo = [];
+  const yahoo = [];
+  for (const item of items) {
+    if (isYahooFeedSource(item)) yahoo.push(item);
+    else nonYahoo.push(item);
+  }
+
+  const picked = [];
+  const sourceCounts = new Map();
+  for (const item of nonYahoo) {
+    const key = feedDiversityKey(item);
+    const count = sourceCounts.get(key) || 0;
+    if (count >= 8) continue;
+    sourceCounts.set(key, count + 1);
+    picked.push(item);
+  }
+
+  const yahooLimit = picked.length ? 3 : 6;
+  picked.push(...yahoo.slice(0, yahooLimit));
+  return picked.slice(0, 30);
 }
 
 function portfolioNewsEmptyHtml() {
@@ -5988,10 +6026,11 @@ function renderNewsIntelligence() {
   const newsStatus = $("#marketNewsStatus");
   if (newsStatus) {
     const signalCount = portfolioNews.filter((event) => event.isSignal).length;
-    const reputable = portfolioNews.filter(isReputableFeedSource).length;
+    const yahooCount = portfolioNews.filter(isYahooFeedSource).length;
+    const nonYahooCount = portfolioNews.length - yahooCount;
     const providers = state.news?.diagnostics?.providers || [];
     const providerText = providers.length ? providers.slice(0, 3).join(" + ") : (state.news?.diagnostics?.status || "cached events");
-    newsStatus.textContent = `${portfolioNews.length} portfolio items | ${signalCount} signals | ${reputable} trusted | ${providerText}`;
+    newsStatus.textContent = `${portfolioNews.length} portfolio items | ${signalCount} signals | ${nonYahooCount} non-Yahoo | ${yahooCount} Yahoo fallback | ${providerText}`;
   }
   const newsNode = $("#marketNewsTable");
   if (newsNode) newsNode.innerHTML = portfolioNews.length ? portfolioNews.slice(0, 10).map((event) => {
