@@ -1126,6 +1126,14 @@ function readableFeedSource(event) {
   return source;
 }
 
+function feedRouteLabel(event) {
+  if (event.source === "google_news_rss") return "via Google News";
+  if (event.source === "yahoo_finance_rss") return "via Yahoo Finance RSS";
+  if (event.source === "finnhub_news") return "via Finnhub";
+  if (event.source === "finnhub") return "via Finnhub events";
+  return "";
+}
+
 function normalizedFeedSource(event) {
   return readableFeedSource(event).toLowerCase().replace(/^the\s+/, "");
 }
@@ -6010,7 +6018,7 @@ function renderNewsIntelligence() {
           <div class="news-source-row">
             <span class="muted">${escapeHtml(londonTimeLabel(publishedAtForEvent(event)))}</span>
             ${sourcePill(event)}
-            <span class="muted">${escapeHtml(readableFeedSource(event))}</span>
+            ${feedRouteLabel(event) ? `<span class="muted">${escapeHtml(feedRouteLabel(event))}</span>` : ""}
             ${sourceLink(event, "Open source")}
           </div>
         </div>

@@ -272,6 +272,16 @@ function trustedRssSource(value = "") {
     || source.includes("globenewswire");
 }
 
+function isYahooSource(value = "") {
+  const source = normalizedRssSource(value);
+  return source === "yahoo" || source === "yahoo finance" || source.includes("yahoo");
+}
+
+function isYahooUrl(value = "") {
+  const href = String(value || "").toLowerCase();
+  return href.includes("yahoo.com") || href.includes("finance.yahoo.");
+}
+
 function newsItemFromYahooRss(ticker, item = "") {
   const sourceUrl = safeNewsUrl(rssTag(item, "link") || rssTag(item, "guid"));
   if (!sourceUrl) return null;
@@ -307,17 +317,20 @@ async function yahooFinanceRssNews(ticker) {
 function googleNewsQuery(ticker, name) {
   const cleanName = String(name || "").replace(/"/g, "").trim();
   const cleanTicker = String(ticker || "").replace(/"/g, "").trim();
+  const topicTerms = "(stock OR shares OR earnings OR revenue OR guidance OR acquisition OR regulation OR analyst)";
+  const exclusions = "-site:yahoo.com -site:finance.yahoo.com";
   if (cleanName && cleanName.toUpperCase() !== cleanTicker.toUpperCase()) {
-    return `"${cleanName}" stock OR shares`;
+    return `("${cleanName}" OR "${cleanTicker}") ${topicTerms} ${exclusions}`;
   }
-  return `"${cleanTicker}" stock OR shares`;
+  return `"${cleanTicker}" ${topicTerms} ${exclusions}`;
 }
 
 function newsItemFromGoogleRss(ticker, item = "") {
   const newsSource = rssSource(item);
-  if (!trustedRssSource(newsSource)) return null;
+  if (!trustedRssSource(newsSource) || isYahooSource(newsSource)) return null;
   const sourceUrl = safeNewsUrl(rssTag(item, "link") || rssTag(item, "guid"));
   if (!sourceUrl) return null;
+  if (isYahooUrl(sourceUrl)) return null;
   const title = rssTag(item, "title") || `${ticker} news`;
   const details = rssTag(item, "description") || null;
   const dateValue = rssTag(item, "pubDate") || rssTag(item, "dc:date");
@@ -395,6 +408,26 @@ function sourceLinkedStoredNews(database, userId, ownedTickers) {
   }).filter(Boolean);
 }
 
+function newsSourceName(item) {
+  return normalizedRssSource(item.newsSource || item.source || "unknown");
+}
+
+function newsProviderPriority(item) {
+  const sourceName = newsSourceName(item);
+  if (isYahooSource(sourceName)) return 5;
+  if (item.source === "google_news_rss") return 0;
+  if (item.source === "finnhub_news") return 1;
+  if (item.source === "yahoo_finance_rss") return 6;
+  if (item.source === "finnhub") return 2;
+  return 3;
+}
+
+function newsSourceLimit(item) {
+  const sourceName = newsSourceName(item);
+  if (isYahooSource(sourceName) || item.source === "yahoo_finance_rss") return 6;
+  return 12;
+}
+
 export async function dashboardNews(userId, { refresh = false } = {}) {
   const database = getDb();
   const ownedEquities = ownedPortfolioEquities(database, userId);
@@ -439,6 +472,7 @@ export async function dashboardNews(userId, { refresh = false } = {}) {
   }
 
   const seen = new Set();
+  const sourceCounts = new Map();
   const uniqueItems = items
     .filter((item) => {
       const key = item.sourceUrl || `${item.ticker}:${item.title}`;
@@ -446,7 +480,15 @@ export async function dashboardNews(userId, { refresh = false } = {}) {
       seen.add(key);
       return true;
     })
-    .sort((a, b) => String(b.publishedAt || b.eventDate).localeCompare(String(a.publishedAt || a.eventDate)))
+    .sort((a, b) => newsProviderPriority(a) - newsProviderPriority(b)
+      || String(b.publishedAt || b.eventDate).localeCompare(String(a.publishedAt || a.eventDate)))
+    .filter((item) => {
+      const sourceName = newsSourceName(item);
+      const used = sourceCounts.get(sourceName) || 0;
+      if (used >= newsSourceLimit(item)) return false;
+      sourceCounts.set(sourceName, used + 1);
+      return true;
+    })
     .slice(0, 30);
 
   const message = !ownedTickers.length
