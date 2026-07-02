@@ -167,8 +167,11 @@ function marketCurrency(ticker) {
   return "USD";
 }
 
-function transactionPriceCurrency(ticker, explicitTradePrice) {
-  return explicitTradePrice > 0 ? marketCurrency(ticker) : NETWEALTH_CURRENCY;
+function transactionPriceCurrency() {
+  // Netwealth transaction-listing prices reconcile to the AUD debit/credit columns.
+  // Keep imported lot and sale prices in AUD so A$ per-share values are not labelled
+  // as USD/GBP/DKK for foreign tickers.
+  return NETWEALTH_CURRENCY;
 }
 
 function resolveCategory(database, ticker) {
